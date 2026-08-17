@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import { Activity, ChevronDown, Clock3, Download, LocateFixed, MapPin, MoreHorizontal, Radio, ShieldCheck, Upload, Wifi } from 'lucide-react'
+import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
@@ -78,10 +79,47 @@ function App() {
   const [showPanel, setShowPanel] = useState(true)
   const [result, setResult] = useState<TestResult | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
+  const [communityTests, setCommunityTests] = useState<CommunityTest[]>([])
+  const [syncState, setSyncState] = useState<'offline' | 'loading' | 'live' | 'error'>(isSupabaseConfigured ? 'loading' : 'offline')
 
-  const points = useMemo(() => stage === 'complete'
-    ? [{ name: 'Your result', region: locationName, coords: location, speed: result?.download ?? 0, type: 'Current test' }, ...seedPoints]
-    : seedPoints, [stage, location, locationName, result])
+  const points = useMemo(() => {
+    const sharedPoints: SpeedPoint[] = communityTests.map((test) => ({
+      name: 'Community test',
+      region: new Date(test.created_at).toLocaleDateString(),
+      coords: [test.latitude, test.longitude],
+      speed: Number(test.download_mbps),
+      type: test.connection_type || 'Internet',
+    }))
+    const basePoints = sharedPoints.length ? sharedPoints : seedPoints
+    return stage === 'complete'
+      ? [{ name: 'Your result', region: locationName, coords: location, speed: result?.download ?? 0, type: 'Current test' }, ...basePoints]
+      : basePoints
+  }, [stage, location, locationName, result, communityTests])
+
+  useEffect(() => {
+    if (!supabase) return
+    const client = supabase
+    let active = true
+    loadCommunityTests()
+      .then((tests) => {
+        if (!active) return
+        setCommunityTests(tests)
+        setSyncState('live')
+      })
+      .catch(() => active && setSyncState('error'))
+
+    const channel = client
+      .channel('public-speed-tests')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'speed_tests' }, (payload) => {
+        setCommunityTests((current) => [payload.new as CommunityTest, ...current].slice(0, 1000))
+      })
+      .subscribe()
+
+    return () => {
+      active = false
+      void client.removeChannel(channel)
+    }
+  }, [])
 
   const requestLocation = () => new Promise<void>((resolve) => {
     setStage('locating')
@@ -125,8 +163,25 @@ function App() {
       setProgress(70)
       const upload = await measureUpload()
       setProgress(100)
-      setResult({ download: Number(download.toFixed(1)), upload: Number(upload.toFixed(1)), ping })
+      const nextResult = { download: Number(download.toFixed(1)), upload: Number(upload.toFixed(1)), ping }
+      setResult(nextResult)
       setStage('complete')
+      if (supabase && locationName !== 'Location unavailable' && locationName !== 'Detect location') {
+        try {
+          const saved = await saveCommunityTest({
+            latitude: Number(location[0].toFixed(2)),
+            longitude: Number(location[1].toFixed(2)),
+            download_mbps: nextResult.download,
+            upload_mbps: nextResult.upload,
+            ping_ms: nextResult.ping,
+            connection_type: (navigator as Navigator & { connection?: { effectiveType?: string } }).connection?.effectiveType ?? null,
+          })
+          if (saved) setCommunityTests((current) => current.some((item) => item.id === saved.id) ? current : [saved, ...current])
+          setSyncState('live')
+        } catch {
+          setSyncState('error')
+        }
+      }
     } catch {
       setErrorMessage('The test server could not be reached. Check your connection and try again.')
       setStage('error')
@@ -185,14 +240,18 @@ function App() {
           <button className="primary-button" onClick={beginTest} disabled={stage === 'locating' || stage === 'testing'}>
             {stage === 'idle' ? 'Start speed test' : stage === 'complete' || stage === 'error' ? 'Test again' : stage === 'locating' ? 'Locating…' : `Testing… ${progress}%`}
           </button>
-          <p className="fine-print">No signup required · Your exact address is never stored</p>
+          <p className="fine-print">No signup required · Location is rounded before it is shared</p>
         </div>
       </section>
 
       <section className="map-section" id="map">
         <div className="section-heading">
           <div><span className="eyebrow">COMMUNITY COVERAGE</span><h2>Explore speeds near you</h2><p>Each dot is a real-world connection test shared by the community.</p></div>
-          <div className="map-stat"><strong>12,804</strong><span>tests mapped this month</span></div>
+          <div className="map-stat">
+            <strong>{communityTests.length ? communityTests.length.toLocaleString() : 'Sample'}</strong>
+            <span>{communityTests.length ? 'shared tests loaded' : 'coverage data'}</span>
+            <small className={`sync-badge sync-${syncState}`}><i />{syncState === 'live' ? 'Live database' : syncState === 'loading' ? 'Connecting' : syncState === 'error' ? 'Sync unavailable' : 'Demo mode'}</small>
+          </div>
         </div>
 
         <div className="map-frame">

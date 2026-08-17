@@ -47,6 +47,11 @@ nav a.active:after { content: ''; position: absolute; height: 2px; left: 0; righ
 .section-heading p { color: var(--muted); font-size: 14px; margin: 0; }
 .map-stat { text-align: right; display: flex; flex-direction: column; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .09em; }
 .map-stat strong { font-family: 'DM Mono', monospace; color: var(--ink); font-size: 24px; letter-spacing: -.04em; }
+.sync-badge { margin-top: 8px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 8px; letter-spacing: .08em; }
+.sync-badge i { width: 6px; height: 6px; border-radius: 50%; background: #9aa4a2; }
+.sync-live i { background: var(--green); box-shadow: 0 0 0 3px rgba(45,148,97,.12); }
+.sync-loading i { background: #f2a541; }
+.sync-error i { background: var(--coral); }
 .map-frame { height: 570px; position: relative; border-radius: 18px; overflow: hidden; border: 7px solid var(--paper); box-shadow: 0 25px 60px rgba(32,48,45,.13); }
 .map { height: 100%; width: 100%; background: #dce3db; }
 .leaflet-tile-pane { filter: saturate(.52) sepia(.08) brightness(1.03); }
