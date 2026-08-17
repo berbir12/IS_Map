@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
-import { Activity, ChevronDown, Clock3, Download, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
+import { Activity, ChevronDown, Clock3, Download, History, Laptop, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Smartphone, Upload, Wifi, X } from 'lucide-react'
 import { Analytics } from '@vercel/analytics/react'
 import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
@@ -8,8 +8,81 @@ import './App.css'
 
 type Stage = 'idle' | 'locating' | 'testing' | 'complete' | 'error'
 type TestResult = { download: number; upload: number; ping: number }
-type HistoryItem = TestResult & { id: string; testedAt: string; location: string; isp: string }
+type HistoryItem = TestResult & { id: string; testedAt: string; location: string; isp: string; deviceLabel?: string; netType?: string }
 type SpeedFilter = 'all' | 'fast' | 'medium' | 'slow'
+
+function detectClientMetadata(measuredDownloadMbps?: number) {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  let deviceType = 'Desktop'
+  if (/iPad|tablet|PlayBook|Nexus 7|Nexus 10|SM-T/i.test(ua)) {
+    deviceType = 'Tablet'
+  } else if (/Mobi|Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) {
+    deviceType = 'Mobile'
+  }
+
+  let os = 'Unknown OS'
+  if (ua.includes('Win')) os = 'Windows'
+  else if (ua.includes('Mac')) os = 'macOS'
+  else if (ua.includes('Android')) os = 'Android'
+  else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS'
+  else if (ua.includes('Linux')) os = 'Linux'
+  else if (ua.includes('CrOS')) os = 'ChromeOS'
+
+  let browser = 'Unknown Browser'
+  if (ua.includes('Firefox')) browser = 'Firefox'
+  else if (ua.includes('Edg')) browser = 'Edge'
+  else if (ua.includes('Chrome')) browser = 'Chrome'
+  else if (ua.includes('Safari')) browser = 'Safari'
+
+  const conn = (navigator as Navigator & {
+    connection?: {
+      effectiveType?: string
+      downlink?: number
+      rtt?: number
+      saveData?: boolean
+      type?: string
+    }
+  }).connection
+
+  const rawEffective = conn?.effectiveType ? conn.effectiveType.toLowerCase() : ''
+  const isMobileDevice = deviceType === 'Mobile' || deviceType === 'Tablet'
+
+  let netType = 'Wi-Fi / Broadband'
+
+  if (measuredDownloadMbps !== undefined) {
+    if (measuredDownloadMbps >= 100) {
+      netType = isMobileDevice ? '5G / Ultra Mobile' : 'Fiber / High-Speed Wi-Fi'
+    } else if (measuredDownloadMbps >= 15) {
+      netType = isMobileDevice ? '4G LTE Cellular' : 'Broadband / Wi-Fi'
+    } else if (measuredDownloadMbps >= 3) {
+      netType = isMobileDevice ? '3G / 4G Cellular' : 'Wi-Fi'
+    } else if (rawEffective.includes('2g') && measuredDownloadMbps < 0.5) {
+      netType = '2G Cellular / Slow'
+    } else {
+      netType = isMobileDevice ? '4G LTE Cellular' : 'Wi-Fi / Broadband'
+    }
+  } else {
+    if (rawEffective === '4g') {
+      netType = isMobileDevice ? '4G LTE Cellular' : 'Broadband / Wi-Fi'
+    } else if (rawEffective === '3g') {
+      netType = isMobileDevice ? '3G Cellular' : 'Wi-Fi'
+    } else if (isMobileDevice) {
+      netType = '4G LTE Cellular'
+    } else {
+      netType = 'Wi-Fi / Broadband'
+    }
+  }
+
+  const deviceLabel = `${deviceType} (${os} · ${browser})`
+
+  return {
+    deviceType,
+    os,
+    browser,
+    deviceLabel,
+    netType,
+  }
+}
 
 type SpeedPoint = {
   name: string
@@ -216,6 +289,7 @@ function App() {
   }
 
   const exportData = () => {
+    const currentMeta = detectClientMetadata()
     const dataToExport = communityTests.length > 0
       ? communityTests.map((item) => ({
           ID: item.id,
@@ -223,6 +297,7 @@ function App() {
           Download_Mbps: item.download_mbps,
           Upload_Mbps: item.upload_mbps,
           Ping_ms: item.ping_ms,
+          Connection_Info: item.connection_type || `${currentMeta.netType} · ${currentMeta.deviceLabel}`,
           City: item.city || 'Unknown',
           ISP: item.isp || 'Unknown',
         }))
@@ -232,6 +307,8 @@ function App() {
           Download_Mbps: item.download,
           Upload_Mbps: item.upload,
           Ping_ms: item.ping,
+          Network_Type: item.netType || currentMeta.netType,
+          Device_Info: item.deviceLabel || currentMeta.deviceLabel,
           City: item.location,
           ISP: item.isp,
         }))
@@ -278,7 +355,16 @@ function App() {
       const nextResult = { download: Number(download.toFixed(1)), upload: Number(upload.toFixed(1)), ping }
       setResult(nextResult)
       setStage('complete')
-      const historyItem: HistoryItem = { ...nextResult, id: crypto.randomUUID(), testedAt: new Date().toISOString(), location: locationName, isp }
+      const clientMeta = detectClientMetadata(nextResult.download)
+      const historyItem: HistoryItem = {
+        ...nextResult,
+        id: crypto.randomUUID(),
+        testedAt: new Date().toISOString(),
+        location: locationName,
+        isp,
+        deviceLabel: clientMeta.deviceLabel,
+        netType: clientMeta.netType,
+      }
       setHistory((current) => {
         const updated = [historyItem, ...current].slice(0, 20)
         localStorage.setItem('is-map-history', JSON.stringify(updated))
@@ -293,7 +379,7 @@ function App() {
             download_mbps: nextResult.download,
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
-            connection_type: (navigator as Navigator & { connection?: { effectiveType?: string } }).connection?.effectiveType ?? null,
+            connection_type: `${clientMeta.netType} · ${clientMeta.deviceLabel}`,
             isp,
             city: locationName,
             country: null,
@@ -363,6 +449,11 @@ function App() {
                 <div><Clock3 size={18} /><span>Ping</span><strong>{result.ping} <small>ms</small></strong></div>
               </div>
               <div className="quality-line"><span><b>{qualityFor(result).label}</b>{qualityFor(result).detail}</span><div><button onClick={shareResult} aria-label="Share result"><Share2 size={15} /></button><button onClick={() => setShowHistory(true)} aria-label="View test history"><History size={15} /></button></div></div>
+              <div className="meta-badge-row">
+                <span>{detectClientMetadata(result.download).deviceType === 'Mobile' ? <Smartphone size={13} /> : <Laptop size={13} />} {detectClientMetadata(result.download).deviceLabel}</span>
+                <span><Radio size={13} /> {detectClientMetadata(result.download).netType}</span>
+                <span><Wifi size={13} /> {isp}</span>
+              </div>
             </>
           ) : <p className={`test-note ${stage === 'error' ? 'error-note' : ''}`}>{stage === 'error' ? errorMessage : stage === 'idle' ? 'We’ll ask for your location, then run a quick test.' : stage === 'locating' ? 'Allow location access in your browser to place your result.' : 'Measuring download, upload, and response time…'}</p>}
 
@@ -437,7 +528,7 @@ function App() {
 
       {showHistory && <div className="modal-backdrop" onClick={() => setShowHistory(false)}><aside className="history-drawer" onClick={(event) => event.stopPropagation()}>
         <div className="drawer-heading"><div><span className="eyebrow">ON THIS DEVICE</span><h2>Your test history</h2></div><button onClick={() => setShowHistory(false)} aria-label="Close history"><X /></button></div>
-        {history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.download.toFixed(1)} <small>Mbps</small></strong><span>{item.location} · {item.isp}</span></div><div><b>{item.upload.toFixed(1)} up</b><b>{item.ping} ms</b><time>{new Date(item.testedAt).toLocaleDateString()}</time></div></article>)}</div> : <p className="empty-history">Your completed tests will appear here.</p>}
+        {history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.download.toFixed(1)} <small>Mbps</small></strong><span>{item.location} · {item.isp}</span>{item.deviceLabel && <small className="history-meta">{item.netType || 'Network'} · {item.deviceLabel}</small>}</div><div><b>{item.upload.toFixed(1)} up</b><b>{item.ping} ms</b><time>{new Date(item.testedAt).toLocaleDateString()}</time></div></article>)}</div> : <p className="empty-history">Your completed tests will appear here.</p>}
         {history.length > 0 && (
           <div className="drawer-footer-actions">
             <button className="export-history" onClick={exportData}><Download size={13} /> Export CSV</button>

@@ -45,6 +45,10 @@ nav a.active:after { content: ''; position: absolute; height: 2px; left: 0; righ
 .results-row small { font-size: 8px; font-weight: 400; }
 .quality-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 11px 12px; border-radius: 9px; background: #eef4ec; }
 .quality-line > span { display: flex; flex-direction: column; color: var(--muted); font-size: 9px; line-height: 1.4; }.quality-line b { color: var(--green); font-size: 11px; }.quality-line > div { display: flex; gap: 5px; }.quality-line button { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+.meta-badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; font-size: 10px; font-weight: 700; color: var(--muted); }
+.meta-badge-row span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: 7px; background: rgba(23,42,47,.05); color: var(--ink); font-size: 10px; }
+.meta-badge-row svg { color: var(--coral); }
+.history-meta { color: #788785; font-size: 9px; margin-top: 2px; }
 .map-section { background: #e8ebe4; padding: 80px max(28px, calc((100vw - 1164px)/2)) 92px; }
 .section-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 30px; }
 .section-heading h2, .how-section h2 { font-size: 40px; line-height: 1; letter-spacing: -.045em; margin: 12px 0; }
