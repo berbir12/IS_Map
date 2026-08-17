@@ -17,10 +17,10 @@ npm run dev
 4. Add the project URL and publishable anon key to `.env.local`.
 5. Restart the development server.
 
-Successful tests will then be stored in `public.speed_tests` and appear on every visitor's map. Coordinates are rounded to two decimal places before upload so precise device locations are not stored.
+Successful tests will then be stored in `public.speed_tests` and appear on every visitor's map. Browser-provided coordinates are stored without rounding so measurements remain accurately positioned.
 
 The second migration adds ISP/location metadata and a database-side submission throttle. Test history remains private in the visitor's browser local storage.
 
-The third migration groups measurements from the same rounded location into a 20-minute window. Tests inside that window update a weighted average and the last-tested time; later tests create a new map record.
+The third migration groups measurements within roughly 150 metres into a 20-minute window while retaining the latest full-precision coordinates. Tests inside that window update a weighted average and the last-tested time; later tests create a new map record.
 
 Without Supabase environment variables, speed testing still works locally, but the shared map remains empty and results are not persisted.

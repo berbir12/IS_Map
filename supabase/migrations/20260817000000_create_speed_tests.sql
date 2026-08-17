@@ -23,6 +23,6 @@ create policy "Anyone can submit a valid speed test"
 on public.speed_tests for insert to anon, authenticated
 with check (download_mbps between 0 and 100000 and upload_mbps between 0 and 100000 and ping_ms between 0 and 60000);
 
-comment on table public.speed_tests is 'Anonymous, approximate-location community internet speed measurements.';
+comment on table public.speed_tests is 'Anonymous community internet speed measurements with browser-provided coordinates.';
 
 alter publication supabase_realtime add table public.speed_tests;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
+import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import { Activity, ChevronDown, Clock3, Download, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
 import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
@@ -40,35 +40,6 @@ function qualityFor(result: TestResult) {
   return { label: 'Limited', detail: 'Basic browsing only; streaming and calls may be unreliable.' }
 }
 
-function CommunityMarkers({ points }: { points: SpeedPoint[] }) {
-  const [zoom, setZoom] = useState(3)
-  useMapEvents({ zoomend: (event) => setZoom(event.target.getZoom()) })
-  const bucketSize = zoom <= 5 ? 8 : zoom <= 8 ? 1 : 0.04
-  const clusters = useMemo(() => {
-    const grouped = new Map<string, SpeedPoint[]>()
-    points.forEach((point) => {
-      const key = `${Math.round(point.coords[0] / bucketSize)}:${Math.round(point.coords[1] / bucketSize)}`
-      grouped.set(key, [...(grouped.get(key) ?? []), point])
-    })
-    return [...grouped.values()].map((items) => ({
-      name: items.length > 1 ? `${items.length} tests` : items[0].name,
-      region: items.length > 1 ? 'Zoom in to explore' : items[0].region,
-      coords: [items.reduce((sum, item) => sum + item.coords[0], 0) / items.length, items.reduce((sum, item) => sum + item.coords[1], 0) / items.length] as [number, number],
-      speed: items.reduce((sum, item) => sum + item.speed, 0) / items.length,
-      type: items.length > 1 ? 'Average download' : items[0].type,
-      count: items.length,
-      lastTest: items.map((item) => item.lastTest).filter(Boolean).sort().at(-1),
-      sampleCount: items.reduce((sum, item) => sum + (item.sampleCount ?? 1), 0),
-    }))
-  }, [points, bucketSize])
-
-  return <>{clusters.map((point, index) => (
-    <CircleMarker key={`${point.name}-${index}`} center={point.coords} radius={point.count > 1 ? 13 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
-      <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small>{point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}{point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}</div></Popup>
-    </CircleMarker>
-  ))}</>
-}
-
 async function measurePing() {
   const samples: number[] = []
   for (let i = 0; i < 3; i += 1) {
@@ -105,6 +76,7 @@ function App() {
   const [stage, setStage] = useState<Stage>('idle')
   const [progress, setProgress] = useState(0)
   const [location, setLocation] = useState<[number, number] | null>(null)
+  const [mapCenter, setMapCenter] = useState<[number, number] | null>(null)
   const [locationName, setLocationName] = useState('Detect location')
   const [showPanel, setShowPanel] = useState(true)
   const [result, setResult] = useState<TestResult | null>(null)
@@ -183,20 +155,22 @@ function App() {
     }
   }, [])
 
-  const requestLocation = () => new Promise<void>((resolve) => {
+  const requestLocation = () => new Promise<[number, number] | null>((resolve) => {
     setStage('locating')
     if (!navigator.geolocation) {
       setLocationName('Location unavailable')
       setStage('idle')
-      resolve()
+      resolve(null)
       return
     }
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        setLocation([coords.latitude, coords.longitude])
+        const detected: [number, number] = [coords.latitude, coords.longitude]
+        setLocation(detected)
+        setMapCenter(detected)
         setLocationName(`${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`)
         setStage('idle')
-        resolve()
+        resolve(detected)
         void Promise.allSettled([
           fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${coords.latitude}&lon=${coords.longitude}`)
             .then((response) => response.json())
@@ -209,9 +183,9 @@ function App() {
       () => {
         setLocationName('Location unavailable')
         setStage('idle')
-        resolve()
+        resolve(null)
       },
-      { enableHighAccuracy: false, timeout: 5000 },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
     )
   })
 
@@ -228,8 +202,7 @@ function App() {
       const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(searchQuery)}`)
       const [place] = await response.json()
       if (place) {
-        setLocation([Number(place.lat), Number(place.lon)])
-        setLocationName(place.display_name.split(',').slice(0, 2).join(','))
+        setMapCenter([Number(place.lat), Number(place.lon)])
       }
     } finally { setSearching(false) }
   }
@@ -246,7 +219,12 @@ function App() {
     setErrorMessage('')
     setProgress(0)
     setSaveState('idle')
-    if (locationName === 'Detect location' || locationName === 'Location unavailable') await requestLocation()
+    const testLocation = await requestLocation()
+    if (!testLocation) {
+      setErrorMessage('A precise location is required before this test can be added to the map.')
+      setStage('error')
+      return
+    }
     setStage('testing')
     try {
       const ping = await measurePing()
@@ -264,12 +242,12 @@ function App() {
         localStorage.setItem('is-map-history', JSON.stringify(updated))
         return updated
       })
-      if (supabase && location && locationName !== 'Location unavailable' && locationName !== 'Detect location') {
+      if (supabase && testLocation && locationName !== 'Location unavailable' && locationName !== 'Detect location') {
         setSaveState('saving')
         try {
           const saved = await saveCommunityTest({
-            latitude: Number(location[0].toFixed(2)),
-            longitude: Number(location[1].toFixed(2)),
+            latitude: testLocation[0],
+            longitude: testLocation[1],
             download_mbps: nextResult.download,
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
@@ -349,7 +327,7 @@ function App() {
           <button className="primary-button" onClick={beginTest} disabled={stage === 'locating' || stage === 'testing'}>
             {stage === 'idle' ? 'Start speed test' : stage === 'complete' || stage === 'error' ? 'Test again' : stage === 'locating' ? 'Locating…' : `Testing… ${progress}%`}
           </button>
-          <p className={`fine-print save-${saveState}`}>{stage === 'complete' ? (saveState === 'saving' ? 'Saving result to the shared map…' : saveState === 'saved' ? 'Saved permanently · Visible on the shared map' : saveState === 'error' ? 'Result not saved · Check location and database setup' : 'Location is rounded before it is shared') : 'No signup required · Location is rounded before it is shared'}</p>
+          <p className={`fine-print save-${saveState}`}>{stage === 'complete' ? (saveState === 'saving' ? 'Saving result to the shared map…' : saveState === 'saved' ? 'Saved permanently · Visible on the shared map' : saveState === 'error' ? 'Result not saved · Check location and database setup' : 'Browser-provided coordinates are shared with the result') : 'No signup required · Browser-provided coordinates are shared with the result'}</p>
         </div>
       </section>
 
@@ -378,8 +356,10 @@ function App() {
         <div className="map-frame">
           <MapContainer center={[0, 20]} zoom={3} scrollWheelZoom className="map" zoomControl>
             <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            {location && <MapFocus coords={location} />}
-            <CommunityMarkers points={filteredPoints} />
+            {(mapCenter || location) && <MapFocus coords={(mapCenter || location)!} />}
+            {filteredPoints.map((point, index) => <CircleMarker key={`${point.name}-${point.coords.join('-')}-${index}`} center={point.coords} radius={point.name === 'Your result' ? 12 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
+              <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small>{point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}{point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}</div></Popup>
+            </CircleMarker>)}
           </MapContainer>
 
           <div className="legend"><span><i className="fast" /> 90+ Mbps</span><span><i className="medium" /> 50–89</span><span><i className="slow" /> Under 50</span></div>
@@ -406,7 +386,7 @@ function App() {
         <span className="eyebrow">BUILT FOR BETTER CONNECTIONS</span>
         <h2>One test makes the map smarter.</h2>
         <div className="steps">
-          <div><b>01</b><LocateFixed /><h3>Share your area</h3><p>Your browser finds your approximate location. We never store your exact address.</p></div>
+          <div><b>01</b><LocateFixed /><h3>Share your location</h3><p>Your browser provides the coordinates used to place the measurement accurately on the map.</p></div>
           <div><b>02</b><Activity /><h3>Run a quick test</h3><p>We estimate download speed, upload speed, and latency in under a minute.</p></div>
           <div><b>03</b><MapPin /><h3>Help your community</h3><p>Your anonymized result joins the map, helping everyone choose better connectivity.</p></div>
         </div>

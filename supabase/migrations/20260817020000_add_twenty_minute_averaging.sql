@@ -35,8 +35,8 @@ begin
 
   select * into existing
   from public.speed_tests
-  where latitude = p_latitude
-    and longitude = p_longitude
+  where abs(latitude - p_latitude) <= 0.0015
+    and abs(longitude - p_longitude) <= 0.0015
     and updated_at >= now() - interval '20 minutes'
   order by updated_at desc
   limit 1
@@ -44,6 +44,8 @@ begin
 
   if found then
     update public.speed_tests set
+      latitude = p_latitude,
+      longitude = p_longitude,
       download_mbps = round(((download_mbps * sample_count) + p_download_mbps) / (sample_count + 1), 2),
       upload_mbps = round(((upload_mbps * sample_count) + p_upload_mbps) / (sample_count + 1), 2),
       ping_ms = round(((ping_ms * sample_count) + p_ping_ms)::numeric / (sample_count + 1))::integer,
