@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
-import { Activity, ChevronDown, Clock3, Download, LocateFixed, MapPin, MoreHorizontal, Radio, ShieldCheck, Upload, Wifi } from 'lucide-react'
+import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
+import { Activity, ChevronDown, Clock3, Download, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
 import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 type Stage = 'idle' | 'locating' | 'testing' | 'complete' | 'error'
 type TestResult = { download: number; upload: number; ping: number }
+type HistoryItem = TestResult & { id: string; testedAt: string; location: string; isp: string }
+type SpeedFilter = 'all' | 'fast' | 'medium' | 'slow'
 
 type SpeedPoint = {
   name: string
@@ -15,17 +17,6 @@ type SpeedPoint = {
   speed: number
   type: string
 }
-
-const seedPoints: SpeedPoint[] = [
-  { name: 'Westlands', region: 'Nairobi', coords: [-1.2674, 36.8108], speed: 118, type: 'Fiber' },
-  { name: 'Kilimani', region: 'Nairobi', coords: [-1.2921, 36.7839], speed: 84, type: '5G' },
-  { name: 'Lavington', region: 'Nairobi', coords: [-1.2824, 36.7696], speed: 96, type: 'Fiber' },
-  { name: 'Kasarani', region: 'Nairobi', coords: [-1.2184, 36.8966], speed: 42, type: '4G' },
-  { name: 'Ruaka', region: 'Kiambu', coords: [-1.2064, 36.7773], speed: 63, type: '5G' },
-  { name: 'Embakasi', region: 'Nairobi', coords: [-1.3158, 36.8971], speed: 29, type: '4G' },
-  { name: 'Karen', region: 'Nairobi', coords: [-1.3197, 36.7073], speed: 72, type: 'Fiber' },
-  { name: 'Ruiru', region: 'Kiambu', coords: [-1.1482, 36.9608], speed: 37, type: '4G' },
-]
 
 function MapFocus({ coords }: { coords: [number, number] }) {
   const map = useMap()
@@ -37,6 +28,41 @@ function colorFor(speed: number) {
   if (speed >= 90) return '#33a566'
   if (speed >= 50) return '#f2a541'
   return '#ef6a5b'
+}
+
+function qualityFor(result: TestResult) {
+  if (result.download >= 100 && result.ping <= 30) return { label: 'Excellent', detail: 'Great for gaming, 4K streaming, and large downloads.' }
+  if (result.download >= 50 && result.ping <= 60) return { label: 'Very good', detail: 'Comfortable for streaming, calls, and remote work.' }
+  if (result.download >= 15) return { label: 'Good', detail: 'Suitable for HD streaming and everyday browsing.' }
+  if (result.download >= 5) return { label: 'Fair', detail: 'Fine for browsing, but calls may occasionally struggle.' }
+  return { label: 'Limited', detail: 'Basic browsing only; streaming and calls may be unreliable.' }
+}
+
+function CommunityMarkers({ points }: { points: SpeedPoint[] }) {
+  const [zoom, setZoom] = useState(3)
+  useMapEvents({ zoomend: (event) => setZoom(event.target.getZoom()) })
+  const bucketSize = zoom <= 5 ? 8 : zoom <= 8 ? 1 : 0.04
+  const clusters = useMemo(() => {
+    const grouped = new Map<string, SpeedPoint[]>()
+    points.forEach((point) => {
+      const key = `${Math.round(point.coords[0] / bucketSize)}:${Math.round(point.coords[1] / bucketSize)}`
+      grouped.set(key, [...(grouped.get(key) ?? []), point])
+    })
+    return [...grouped.values()].map((items) => ({
+      name: items.length > 1 ? `${items.length} tests` : items[0].name,
+      region: items.length > 1 ? 'Zoom in to explore' : items[0].region,
+      coords: [items.reduce((sum, item) => sum + item.coords[0], 0) / items.length, items.reduce((sum, item) => sum + item.coords[1], 0) / items.length] as [number, number],
+      speed: items.reduce((sum, item) => sum + item.speed, 0) / items.length,
+      type: items.length > 1 ? 'Average download' : items[0].type,
+      count: items.length,
+    }))
+  }, [points, bucketSize])
+
+  return <>{clusters.map((point, index) => (
+    <CircleMarker key={`${point.name}-${index}`} center={point.coords} radius={point.count > 1 ? 13 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
+      <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small></div></Popup>
+    </CircleMarker>
+  ))}</>
 }
 
 async function measurePing() {
@@ -74,13 +100,25 @@ async function measureUpload() {
 function App() {
   const [stage, setStage] = useState<Stage>('idle')
   const [progress, setProgress] = useState(0)
-  const [location, setLocation] = useState<[number, number]>([-1.2864, 36.8172])
+  const [location, setLocation] = useState<[number, number] | null>(null)
   const [locationName, setLocationName] = useState('Detect location')
   const [showPanel, setShowPanel] = useState(true)
   const [result, setResult] = useState<TestResult | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [communityTests, setCommunityTests] = useState<CommunityTest[]>([])
   const [syncState, setSyncState] = useState<'offline' | 'loading' | 'live' | 'error'>(isSupabaseConfigured ? 'loading' : 'offline')
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [isp, setIsp] = useState('Unknown provider')
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
+    try { return JSON.parse(localStorage.getItem('is-map-history') ?? '[]') as HistoryItem[] } catch { return [] }
+  })
+  const [showHistory, setShowHistory] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
+  const [speedFilter, setSpeedFilter] = useState<SpeedFilter>('all')
+  const [providerFilter, setProviderFilter] = useState('all')
+  const [daysFilter, setDaysFilter] = useState(30)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searching, setSearching] = useState(false)
 
   const points = useMemo(() => {
     const sharedPoints: SpeedPoint[] = communityTests.map((test) => ({
@@ -90,11 +128,26 @@ function App() {
       speed: Number(test.download_mbps),
       type: test.connection_type || 'Internet',
     }))
-    const basePoints = sharedPoints.length ? sharedPoints : seedPoints
-    return stage === 'complete'
-      ? [{ name: 'Your result', region: locationName, coords: location, speed: result?.download ?? 0, type: 'Current test' }, ...basePoints]
-      : basePoints
+    return stage === 'complete' && location
+      ? [{ name: 'Your result', region: locationName, coords: location, speed: result?.download ?? 0, type: 'Current test' }, ...sharedPoints]
+      : sharedPoints
   }, [stage, location, locationName, result, communityTests])
+
+  const averageSpeed = communityTests.length
+    ? communityTests.reduce((total, test) => total + Number(test.download_mbps), 0) / communityTests.length
+    : 0
+  const fastestTest = communityTests.reduce<CommunityTest | null>((fastest, test) =>
+    !fastest || Number(test.download_mbps) > Number(fastest.download_mbps) ? test : fastest, null)
+  const chartTests = communityTests.slice(0, 12).reverse()
+  const chartMax = Math.max(...chartTests.map((test) => Number(test.download_mbps)), 1)
+  const providers = [...new Set(communityTests.map((test) => test.isp).filter(Boolean))] as string[]
+  const filteredPoints = points.filter((point) => {
+    const matchingTest = communityTests.find((test) => test.latitude === point.coords[0] && test.longitude === point.coords[1] && Number(test.download_mbps) === point.speed)
+    const speedMatches = speedFilter === 'all' || (speedFilter === 'fast' && point.speed >= 90) || (speedFilter === 'medium' && point.speed >= 50 && point.speed < 90) || (speedFilter === 'slow' && point.speed < 50)
+    const providerMatches = providerFilter === 'all' || matchingTest?.isp === providerFilter
+    const dateMatches = !matchingTest || new Date(matchingTest.created_at).getTime() >= Date.now() - daysFilter * 86_400_000
+    return speedMatches && providerMatches && dateMatches
+  })
 
   useEffect(() => {
     if (!supabase) return
@@ -135,6 +188,14 @@ function App() {
         setLocationName(`${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`)
         setStage('idle')
         resolve()
+        void Promise.allSettled([
+          fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${coords.latitude}&lon=${coords.longitude}`)
+            .then((response) => response.json())
+            .then((data) => setLocationName(data.address?.city || data.address?.town || data.address?.county || `${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`)),
+          fetch('https://ipwho.is/')
+            .then((response) => response.json())
+            .then((data) => data.connection?.isp && setIsp(data.connection.isp)),
+        ])
       },
       () => {
         setLocationName('Location unavailable')
@@ -150,10 +211,32 @@ function App() {
     setShowPanel(true)
   }
 
+  const searchLocation = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!searchQuery.trim()) return
+    setSearching(true)
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(searchQuery)}`)
+      const [place] = await response.json()
+      if (place) {
+        setLocation([Number(place.lat), Number(place.lon)])
+        setLocationName(place.display_name.split(',').slice(0, 2).join(','))
+      }
+    } finally { setSearching(false) }
+  }
+
+  const shareResult = async () => {
+    if (!result) return
+    const text = `My IS Map result: ${result.download.toFixed(1)} Mbps down, ${result.upload.toFixed(1)} Mbps up, ${result.ping} ms ping.`
+    if (navigator.share) await navigator.share({ title: 'My IS Map result', text }).catch(() => undefined)
+    else await navigator.clipboard.writeText(text)
+  }
+
   const beginTest = async () => {
     setResult(null)
     setErrorMessage('')
     setProgress(0)
+    setSaveState('idle')
     if (locationName === 'Detect location' || locationName === 'Location unavailable') await requestLocation()
     setStage('testing')
     try {
@@ -166,7 +249,14 @@ function App() {
       const nextResult = { download: Number(download.toFixed(1)), upload: Number(upload.toFixed(1)), ping }
       setResult(nextResult)
       setStage('complete')
-      if (supabase && locationName !== 'Location unavailable' && locationName !== 'Detect location') {
+      const historyItem: HistoryItem = { ...nextResult, id: crypto.randomUUID(), testedAt: new Date().toISOString(), location: locationName, isp }
+      setHistory((current) => {
+        const updated = [historyItem, ...current].slice(0, 20)
+        localStorage.setItem('is-map-history', JSON.stringify(updated))
+        return updated
+      })
+      if (supabase && location && locationName !== 'Location unavailable' && locationName !== 'Detect location') {
+        setSaveState('saving')
         try {
           const saved = await saveCommunityTest({
             latitude: Number(location[0].toFixed(2)),
@@ -175,12 +265,19 @@ function App() {
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
             connection_type: (navigator as Navigator & { connection?: { effectiveType?: string } }).connection?.effectiveType ?? null,
+            isp,
+            city: locationName,
+            country: null,
           })
           if (saved) setCommunityTests((current) => current.some((item) => item.id === saved.id) ? current : [saved, ...current])
           setSyncState('live')
+          setSaveState('saved')
         } catch {
           setSyncState('error')
+          setSaveState('error')
         }
+      } else {
+        setSaveState('error')
       }
     } catch {
       setErrorMessage('The test server could not be reached. Check your connection and try again.')
@@ -230,17 +327,20 @@ function App() {
           </div>
 
           {stage === 'complete' && result ? (
-            <div className="results-row">
-              <div><Download size={18} /><span>Download</span><strong>{result.download.toFixed(1)} <small>Mbps</small></strong></div>
-              <div><Upload size={18} /><span>Upload</span><strong>{result.upload.toFixed(1)} <small>Mbps</small></strong></div>
-              <div><Clock3 size={18} /><span>Ping</span><strong>{result.ping} <small>ms</small></strong></div>
-            </div>
+            <>
+              <div className="results-row">
+                <div><Download size={18} /><span>Download</span><strong>{result.download.toFixed(1)} <small>Mbps</small></strong></div>
+                <div><Upload size={18} /><span>Upload</span><strong>{result.upload.toFixed(1)} <small>Mbps</small></strong></div>
+                <div><Clock3 size={18} /><span>Ping</span><strong>{result.ping} <small>ms</small></strong></div>
+              </div>
+              <div className="quality-line"><span><b>{qualityFor(result).label}</b>{qualityFor(result).detail}</span><div><button onClick={shareResult} aria-label="Share result"><Share2 size={15} /></button><button onClick={() => setShowHistory(true)} aria-label="View test history"><History size={15} /></button></div></div>
+            </>
           ) : <p className={`test-note ${stage === 'error' ? 'error-note' : ''}`}>{stage === 'error' ? errorMessage : stage === 'idle' ? 'We’ll ask for your location, then run a quick test.' : stage === 'locating' ? 'Allow location access in your browser to place your result.' : 'Measuring download, upload, and response time…'}</p>}
 
           <button className="primary-button" onClick={beginTest} disabled={stage === 'locating' || stage === 'testing'}>
             {stage === 'idle' ? 'Start speed test' : stage === 'complete' || stage === 'error' ? 'Test again' : stage === 'locating' ? 'Locating…' : `Testing… ${progress}%`}
           </button>
-          <p className="fine-print">No signup required · Location is rounded before it is shared</p>
+          <p className={`fine-print save-${saveState}`}>{stage === 'complete' ? (saveState === 'saving' ? 'Saving result to the shared map…' : saveState === 'saved' ? 'Saved permanently · Visible on the shared map' : saveState === 'error' ? 'Result not saved · Check location and database setup' : 'Location is rounded before it is shared') : 'No signup required · Location is rounded before it is shared'}</p>
         </div>
       </section>
 
@@ -248,36 +348,45 @@ function App() {
         <div className="section-heading">
           <div><span className="eyebrow">COMMUNITY COVERAGE</span><h2>Explore speeds near you</h2><p>Each dot is a real-world connection test shared by the community.</p></div>
           <div className="map-stat">
-            <strong>{communityTests.length ? communityTests.length.toLocaleString() : 'Sample'}</strong>
-            <span>{communityTests.length ? 'shared tests loaded' : 'coverage data'}</span>
-            <small className={`sync-badge sync-${syncState}`}><i />{syncState === 'live' ? 'Live database' : syncState === 'loading' ? 'Connecting' : syncState === 'error' ? 'Sync unavailable' : 'Demo mode'}</small>
+            <strong>{communityTests.length.toLocaleString()}</strong>
+            <span>shared tests loaded</span>
+            <small className={`sync-badge sync-${syncState}`}><i />{syncState === 'live' ? 'Live database' : syncState === 'loading' ? 'Connecting' : syncState === 'error' ? 'Sync unavailable' : 'Database not configured'}</small>
           </div>
         </div>
 
+        <div className="map-toolbar">
+          <form onSubmit={searchLocation}><Search size={16} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search a city or area" aria-label="Search map" /><button disabled={searching}>{searching ? 'Finding…' : 'Go'}</button></form>
+          <button className={showFilters ? 'selected' : ''} onClick={() => setShowFilters((value) => !value)}><SlidersHorizontal size={16} /> Filters{speedFilter !== 'all' || providerFilter !== 'all' || daysFilter !== 30 ? ' •' : ''}</button>
+          {history.length > 0 && <button onClick={() => setShowHistory(true)}><History size={16} /> History</button>}
+          {showFilters && <div className="filter-popover">
+            <label>Speed<select value={speedFilter} onChange={(event) => setSpeedFilter(event.target.value as SpeedFilter)}><option value="all">All speeds</option><option value="fast">90+ Mbps</option><option value="medium">50–89 Mbps</option><option value="slow">Under 50 Mbps</option></select></label>
+            <label>Provider<select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">All providers</option>{providers.map((provider) => <option key={provider}>{provider}</option>)}</select></label>
+            <label>Period<select value={daysFilter} onChange={(event) => setDaysFilter(Number(event.target.value))}><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option><option value={3650}>All time</option></select></label>
+          </div>}
+        </div>
+
         <div className="map-frame">
-          <MapContainer center={location} zoom={11} scrollWheelZoom className="map" zoomControl>
+          <MapContainer center={[0, 20]} zoom={3} scrollWheelZoom className="map" zoomControl>
             <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapFocus coords={location} />
-            {points.map((point, index) => (
-              <CircleMarker key={`${point.name}-${index}`} center={point.coords} radius={point.name === 'Your result' ? 13 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
-                <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed} Mbps</strong><small>{point.type}</small></div></Popup>
-              </CircleMarker>
-            ))}
+            {location && <MapFocus coords={location} />}
+            <CommunityMarkers points={filteredPoints} />
           </MapContainer>
 
           <div className="legend"><span><i className="fast" /> 90+ Mbps</span><span><i className="medium" /> 50–89</span><span><i className="slow" /> Under 50</span></div>
-          <button className="map-menu" aria-label="Map options"><MoreHorizontal size={20} /></button>
+          {!communityTests.length && syncState !== 'loading' && (
+            <div className="empty-map-state"><Radio size={24} /><strong>No speed tests logged yet</strong><span>Run the first test to start the community map.</span></div>
+          )}
 
-          {showPanel && (
+          {showPanel && communityTests.length > 0 && (
             <aside className="map-panel">
               <button className="panel-close" onClick={() => setShowPanel(false)} aria-label="Close map summary">×</button>
-              <span className="mini-label">{locationName === 'Detect location' ? 'SAMPLE COVERAGE: NAIROBI' : `NEAR ${locationName.toUpperCase()}`}</span>
+              <span className="mini-label">REAL COMMUNITY DATA</span>
               <h3>Connection snapshot</h3>
-              <div className="average"><strong>71.2</strong><span>Mbps average</span></div>
+              <div className="average"><strong>{averageSpeed.toFixed(1)}</strong><span>Mbps average</span></div>
               <div className="bar-chart" aria-label="Connection speed distribution">
-                {[34, 56, 48, 72, 63, 84, 51, 76, 91, 69, 88, 58].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}
+                {chartTests.map((test) => <i key={test.id} style={{ height: `${Math.max(8, Number(test.download_mbps) / chartMax * 100)}%` }} />)}
               </div>
-              <div className="panel-footer"><span><b>Fastest area</b> Westlands</span><strong>118 Mbps</strong></div>
+              <div className="panel-footer"><span><b>Fastest logged test</b>{fastestTest ? new Date(fastestTest.created_at).toLocaleDateString() : ''}</span><strong>{fastestTest ? `${Number(fastestTest.download_mbps).toFixed(1)} Mbps` : '—'}</strong></div>
             </aside>
           )}
         </div>
@@ -292,6 +401,12 @@ function App() {
           <div><b>03</b><MapPin /><h3>Help your community</h3><p>Your anonymized result joins the map, helping everyone choose better connectivity.</p></div>
         </div>
       </section>
+
+      {showHistory && <div className="modal-backdrop" onClick={() => setShowHistory(false)}><aside className="history-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="drawer-heading"><div><span className="eyebrow">ON THIS DEVICE</span><h2>Your test history</h2></div><button onClick={() => setShowHistory(false)} aria-label="Close history"><X /></button></div>
+        {history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.download.toFixed(1)} <small>Mbps</small></strong><span>{item.location} · {item.isp}</span></div><div><b>{item.upload.toFixed(1)} up</b><b>{item.ping} ms</b><time>{new Date(item.testedAt).toLocaleDateString()}</time></div></article>)}</div> : <p className="empty-history">Your completed tests will appear here.</p>}
+        {history.length > 0 && <button className="clear-history" onClick={() => { localStorage.removeItem('is-map-history'); setHistory([]) }}>Clear local history</button>}
+      </aside></div>}
 
       <footer><div className="brand"><span className="brand-mark"><Radio size={18} /></span><span>IS Map</span></div><p>Community-powered connectivity insights.</p><span>© 2026 IS Map</span></footer>
     </main>
