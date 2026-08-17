@@ -16,6 +16,8 @@ type SpeedPoint = {
   coords: [number, number]
   speed: number
   type: string
+  lastTest?: string
+  sampleCount?: number
 }
 
 function MapFocus({ coords }: { coords: [number, number] }) {
@@ -55,12 +57,14 @@ function CommunityMarkers({ points }: { points: SpeedPoint[] }) {
       speed: items.reduce((sum, item) => sum + item.speed, 0) / items.length,
       type: items.length > 1 ? 'Average download' : items[0].type,
       count: items.length,
+      lastTest: items.map((item) => item.lastTest).filter(Boolean).sort().at(-1),
+      sampleCount: items.reduce((sum, item) => sum + (item.sampleCount ?? 1), 0),
     }))
   }, [points, bucketSize])
 
   return <>{clusters.map((point, index) => (
     <CircleMarker key={`${point.name}-${index}`} center={point.coords} radius={point.count > 1 ? 13 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
-      <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small></div></Popup>
+      <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small>{point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}{point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}</div></Popup>
     </CircleMarker>
   ))}</>
 }
@@ -123,10 +127,12 @@ function App() {
   const points = useMemo(() => {
     const sharedPoints: SpeedPoint[] = communityTests.map((test) => ({
       name: 'Community test',
-      region: new Date(test.created_at).toLocaleDateString(),
+      region: test.city || test.country || 'Shared location',
       coords: [test.latitude, test.longitude],
       speed: Number(test.download_mbps),
       type: test.connection_type || 'Internet',
+      lastTest: test.updated_at,
+      sampleCount: test.sample_count,
     }))
     return stage === 'complete' && location
       ? [{ name: 'Your result', region: locationName, coords: location, speed: result?.download ?? 0, type: 'Current test' }, ...sharedPoints]
@@ -138,14 +144,16 @@ function App() {
     : 0
   const fastestTest = communityTests.reduce<CommunityTest | null>((fastest, test) =>
     !fastest || Number(test.download_mbps) > Number(fastest.download_mbps) ? test : fastest, null)
-  const chartTests = communityTests.slice(0, 12).reverse()
+  const lastCommunityTest = communityTests.reduce<CommunityTest | null>((latest, test) =>
+    !latest || new Date(test.updated_at).getTime() > new Date(latest.updated_at).getTime() ? test : latest, null)
+  const chartTests = communityTests.slice().sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 12).reverse()
   const chartMax = Math.max(...chartTests.map((test) => Number(test.download_mbps)), 1)
   const providers = [...new Set(communityTests.map((test) => test.isp).filter(Boolean))] as string[]
   const filteredPoints = points.filter((point) => {
     const matchingTest = communityTests.find((test) => test.latitude === point.coords[0] && test.longitude === point.coords[1] && Number(test.download_mbps) === point.speed)
     const speedMatches = speedFilter === 'all' || (speedFilter === 'fast' && point.speed >= 90) || (speedFilter === 'medium' && point.speed >= 50 && point.speed < 90) || (speedFilter === 'slow' && point.speed < 50)
     const providerMatches = providerFilter === 'all' || matchingTest?.isp === providerFilter
-    const dateMatches = !matchingTest || new Date(matchingTest.created_at).getTime() >= Date.now() - daysFilter * 86_400_000
+    const dateMatches = !matchingTest || new Date(matchingTest.updated_at).getTime() >= Date.now() - daysFilter * 86_400_000
     return speedMatches && providerMatches && dateMatches
   })
 
@@ -163,8 +171,9 @@ function App() {
 
     const channel = client
       .channel('public-speed-tests')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'speed_tests' }, (payload) => {
-        setCommunityTests((current) => [payload.new as CommunityTest, ...current].slice(0, 1000))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'speed_tests' }, (payload) => {
+        const changed = payload.new as CommunityTest
+        setCommunityTests((current) => [changed, ...current.filter((test) => test.id !== changed.id)].slice(0, 1000))
       })
       .subscribe()
 
@@ -350,6 +359,7 @@ function App() {
           <div className="map-stat">
             <strong>{communityTests.length.toLocaleString()}</strong>
             <span>shared tests loaded</span>
+            {lastCommunityTest && <time>Last test {new Date(lastCommunityTest.updated_at).toLocaleString()}</time>}
             <small className={`sync-badge sync-${syncState}`}><i />{syncState === 'live' ? 'Live database' : syncState === 'loading' ? 'Connecting' : syncState === 'error' ? 'Sync unavailable' : 'Database not configured'}</small>
           </div>
         </div>
@@ -386,7 +396,7 @@ function App() {
               <div className="bar-chart" aria-label="Connection speed distribution">
                 {chartTests.map((test) => <i key={test.id} style={{ height: `${Math.max(8, Number(test.download_mbps) / chartMax * 100)}%` }} />)}
               </div>
-              <div className="panel-footer"><span><b>Fastest logged test</b>{fastestTest ? new Date(fastestTest.created_at).toLocaleDateString() : ''}</span><strong>{fastestTest ? `${Number(fastestTest.download_mbps).toFixed(1)} Mbps` : '—'}</strong></div>
+              <div className="panel-footer"><span><b>Last speed test</b>{lastCommunityTest ? new Date(lastCommunityTest.updated_at).toLocaleString() : ''}</span><strong>{fastestTest ? `${Number(fastestTest.download_mbps).toFixed(1)} Mbps best` : '—'}</strong></div>
             </aside>
           )}
         </div>
