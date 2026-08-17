@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
-import { Activity, ChevronDown, Clock3, Download, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
+import L from 'leaflet'
+import 'leaflet.heat'
+import { Activity, ChevronDown, Clock3, Download, Flame, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
 import { Analytics } from '@vercel/analytics/react'
 import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
@@ -24,6 +24,41 @@ type SpeedPoint = {
 function MapFocus({ coords }: { coords: [number, number] }) {
   const map = useMap()
   useEffect(() => { map.flyTo(coords, 12, { duration: 1.2 }) }, [coords, map])
+  return null
+}
+
+function HeatmapLayer({ points }: { points: SpeedPoint[] }) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!map || points.length === 0) return
+
+    const heatPoints: [number, number, number][] = points.map((p) => [
+      p.coords[0],
+      p.coords[1],
+      Math.min(1, Math.max(0.25, p.speed / 100)),
+    ])
+
+    const heatLayer = (L as unknown as { heatLayer: (data: [number, number, number][], options: unknown) => L.Layer }).heatLayer(heatPoints, {
+      radius: 34,
+      blur: 20,
+      maxZoom: 16,
+      max: 1.0,
+      gradient: {
+        0.2: '#ef6a5b',
+        0.55: '#f2a541',
+        0.85: '#33a566',
+        1.0: '#23864f',
+      },
+    })
+
+    heatLayer.addTo(map)
+
+    return () => {
+      map.removeLayer(heatLayer)
+    }
+  }, [map, points])
+
   return null
 }
 
@@ -96,6 +131,7 @@ function App() {
   const [daysFilter, setDaysFilter] = useState(30)
   const [searchQuery, setSearchQuery] = useState('')
   const [searching, setSearching] = useState(false)
+  const [mapMode, setMapMode] = useState<'markers' | 'heatmap'>('markers')
 
   const points = useMemo(() => {
     const sharedPoints: SpeedPoint[] = communityTests.map((test) => ({
@@ -386,6 +422,10 @@ function App() {
 
         <div className="map-toolbar">
           <form onSubmit={searchLocation}><Search size={16} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search a city or area" aria-label="Search map" /><button disabled={searching}>{searching ? 'Finding…' : 'Go'}</button></form>
+          <div className="view-mode-toggle" role="radiogroup" aria-label="Map view mode">
+            <button className={mapMode === 'markers' ? 'selected' : ''} onClick={() => setMapMode('markers')} title="Show pin markers"><MapPin size={15} /> Pins</button>
+            <button className={mapMode === 'heatmap' ? 'selected' : ''} onClick={() => setMapMode('heatmap')} title="Show continuous speed heatmap"><Flame size={15} /> Heatmap</button>
+          </div>
           <button className={showFilters ? 'selected' : ''} onClick={() => setShowFilters((value) => !value)}><SlidersHorizontal size={16} /> Filters{speedFilter !== 'all' || providerFilter !== 'all' || daysFilter !== 30 ? ' •' : ''}</button>
           {history.length > 0 && <button onClick={() => setShowHistory(true)}><History size={16} /> History</button>}
           <button onClick={exportData} title="Export speed test dataset as CSV" aria-label="Export dataset"><Download size={16} /> Export</button>
@@ -400,9 +440,13 @@ function App() {
           <MapContainer center={[0, 20]} zoom={3} scrollWheelZoom className="map" zoomControl>
             <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             {(mapCenter || location) && <MapFocus coords={(mapCenter || location)!} />}
-            {filteredPoints.map((point, index) => <CircleMarker key={`${point.name}-${point.coords.join('-')}-${index}`} center={point.coords} radius={point.name === 'Your result' ? 12 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
-              <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small>{point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}{point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}</div></Popup>
-            </CircleMarker>)}
+            {mapMode === 'heatmap' ? (
+              <HeatmapLayer points={filteredPoints} />
+            ) : (
+              filteredPoints.map((point, index) => <CircleMarker key={`${point.name}-${point.coords.join('-')}-${index}`} center={point.coords} radius={point.name === 'Your result' ? 12 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
+                <Popup><div className="map-popup"><b>{point.name}</b><span>{point.region}</span><strong>{point.speed.toFixed(1)} Mbps</strong><small>{point.type}</small>{point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}{point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}</div></Popup>
+              </CircleMarker>)
+            )}
           </MapContainer>
 
           <div className="legend"><span><i className="fast" /> 90+ Mbps</span><span><i className="medium" /> 50–89</span><span><i className="slow" /> Under 50</span></div>
