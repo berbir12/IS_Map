@@ -215,6 +215,47 @@ function App() {
     else await navigator.clipboard.writeText(text)
   }
 
+  const exportData = () => {
+    const dataToExport = communityTests.length > 0
+      ? communityTests.map((item) => ({
+          ID: item.id,
+          Date: new Date(item.created_at || item.updated_at).toLocaleString(),
+          Download_Mbps: item.download_mbps,
+          Upload_Mbps: item.upload_mbps,
+          Ping_ms: item.ping_ms,
+          City: item.city || 'Unknown',
+          ISP: item.isp || 'Unknown',
+        }))
+      : history.map((item) => ({
+          ID: item.id,
+          Date: new Date(item.testedAt).toLocaleString(),
+          Download_Mbps: item.download,
+          Upload_Mbps: item.upload,
+          Ping_ms: item.ping,
+          City: item.location,
+          ISP: item.isp,
+        }))
+
+    if (dataToExport.length === 0) return
+
+    const headers = Object.keys(dataToExport[0]).join(',')
+    const rows = dataToExport.map((row) =>
+      Object.values(row)
+        .map((val) => `"${String(val).replace(/"/g, '""')}"`)
+        .join(',')
+    )
+    const csvContent = [headers, ...rows].join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `is-map-speed-data-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   const beginTest = async () => {
     setResult(null)
     setErrorMessage('')
@@ -347,6 +388,7 @@ function App() {
           <form onSubmit={searchLocation}><Search size={16} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search a city or area" aria-label="Search map" /><button disabled={searching}>{searching ? 'Finding…' : 'Go'}</button></form>
           <button className={showFilters ? 'selected' : ''} onClick={() => setShowFilters((value) => !value)}><SlidersHorizontal size={16} /> Filters{speedFilter !== 'all' || providerFilter !== 'all' || daysFilter !== 30 ? ' •' : ''}</button>
           {history.length > 0 && <button onClick={() => setShowHistory(true)}><History size={16} /> History</button>}
+          <button onClick={exportData} title="Export speed test dataset as CSV" aria-label="Export dataset"><Download size={16} /> Export</button>
           {showFilters && <div className="filter-popover">
             <label>Speed<select value={speedFilter} onChange={(event) => setSpeedFilter(event.target.value as SpeedFilter)}><option value="all">All speeds</option><option value="fast">90+ Mbps</option><option value="medium">50–89 Mbps</option><option value="slow">Under 50 Mbps</option></select></label>
             <label>Provider<select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">All providers</option>{providers.map((provider) => <option key={provider}>{provider}</option>)}</select></label>
@@ -396,7 +438,12 @@ function App() {
       {showHistory && <div className="modal-backdrop" onClick={() => setShowHistory(false)}><aside className="history-drawer" onClick={(event) => event.stopPropagation()}>
         <div className="drawer-heading"><div><span className="eyebrow">ON THIS DEVICE</span><h2>Your test history</h2></div><button onClick={() => setShowHistory(false)} aria-label="Close history"><X /></button></div>
         {history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.download.toFixed(1)} <small>Mbps</small></strong><span>{item.location} · {item.isp}</span></div><div><b>{item.upload.toFixed(1)} up</b><b>{item.ping} ms</b><time>{new Date(item.testedAt).toLocaleDateString()}</time></div></article>)}</div> : <p className="empty-history">Your completed tests will appear here.</p>}
-        {history.length > 0 && <button className="clear-history" onClick={() => { localStorage.removeItem('is-map-history'); setHistory([]) }}>Clear local history</button>}
+        {history.length > 0 && (
+          <div className="drawer-footer-actions">
+            <button className="export-history" onClick={exportData}><Download size={13} /> Export CSV</button>
+            <button className="clear-history" onClick={() => { localStorage.removeItem('is-map-history'); setHistory([]) }}>Clear local history</button>
+          </div>
+        )}
       </aside></div>}
 
       <footer><div className="brand"><img src="/logo.png" alt="IS Map Logo" className="brand-logo-img" /><span>IS Map</span></div><p>Community-powered connectivity insights.</p><span>© 2026 IS Map</span></footer>
