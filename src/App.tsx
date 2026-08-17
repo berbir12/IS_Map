@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import { Activity, ChevronDown, Clock3, Download, History, LocateFixed, MapPin, Radio, Search, Share2, ShieldCheck, SlidersHorizontal, Upload, Wifi, X } from 'lucide-react'
+import { Analytics } from '@vercel/analytics/react'
 import { isSupabaseConfigured, loadCommunityTests, saveCommunityTest, supabase, type CommunityTest } from './lib/supabase'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
@@ -276,7 +277,7 @@ function App() {
     <main className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} aria-label="IS Map home">
-          <span className="brand-mark"><Radio size={21} /></span>
+          <img src="/logo.png" alt="IS Map Logo" className="brand-logo-img" />
           <span>IS Map</span>
         </button>
         <nav aria-label="Primary navigation">
@@ -398,7 +399,8 @@ function App() {
         {history.length > 0 && <button className="clear-history" onClick={() => { localStorage.removeItem('is-map-history'); setHistory([]) }}>Clear local history</button>}
       </aside></div>}
 
-      <footer><div className="brand"><span className="brand-mark"><Radio size={18} /></span><span>IS Map</span></div><p>Community-powered connectivity insights.</p><span>© 2026 IS Map</span></footer>
+      <footer><div className="brand"><img src="/logo.png" alt="IS Map Logo" className="brand-logo-img" /><span>IS Map</span></div><p>Community-powered connectivity insights.</p><span>© 2026 IS Map</span></footer>
+      <Analytics />
     </main>
   )
 }

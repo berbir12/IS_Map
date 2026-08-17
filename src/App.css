@@ -2,6 +2,7 @@
 .app-shell { min-height: 100vh; overflow: hidden; }
 .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; max-width: 1220px; margin: 0 auto; padding: 0 28px; border-bottom: 1px solid rgba(23,42,47,.1); }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; letter-spacing: -.4px; border: 0; background: none; color: var(--ink); }
+.brand-logo-img { height: 36px; width: auto; object-fit: contain; }
 .brand-mark { width: 35px; height: 35px; border-radius: 50% 50% 50% 12px; background: var(--coral); color: white; display: grid; place-items: center; transform: rotate(-8deg); }
 .brand-mark svg { transform: rotate(8deg); }
 nav { display: flex; gap: 36px; font-size: 13px; font-weight: 700; }
