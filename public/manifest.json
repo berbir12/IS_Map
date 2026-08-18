@@ -1,0 +1,23 @@
+{
+  "name": "ismap — Internet speeds near you",
+  "short_name": "ismap",
+  "description": "Test your connection and explore community-powered internet speed data.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#ee654d",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# 🌐 IS Map — Community-Powered Internet Speed Map
+# 🌐 ismap — Community-Powered Internet Speed Map
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![React 19](https://img.shields.io/badge/React-19.0-blue.svg)](https://react.dev/)
@@ -6,7 +6,7 @@
 [![Vite](https://img.shields.io/badge/Vite-8.2-purple.svg)](https://vitejs.dev/)
 [![Supabase](https://img.shields.io/badge/Supabase-Database-emerald.svg)](https://supabase.com/)
 
-**IS Map** is an open-source, community-powered application for real-time internet speed testing and geographic coverage visualization. Users can test their connection speed, rate their ISP performance, view spatial heatmaps, and export connection datasets.
+**ismap** is an open-source, community-powered application for real-time internet speed testing and geographic coverage visualization. Users can test their connection speed, rate their ISP performance, view spatial heatmaps, and export connection datasets.
 
 ---
 

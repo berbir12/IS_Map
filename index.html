@@ -3,33 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png?v=2" />
+    <link rel="shortcut icon" href="/favicon.ico?v=2" />
+    <link rel="apple-touch-icon" href="/logo.svg?v=2" />
+    <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#f6f1e7" />
     <meta name="description" content="Test your connection in seconds and explore a living, community-powered map of internet speeds." />
-    <title>IS Map — Internet speeds near you</title>
+    <title>ismap — Internet speeds near you</title>
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://ismap.bitlabsbuild.com/x/ismap-2026" />
-    <meta property="og:title" content="IS Map — Internet speeds near you" />
+    <meta property="og:title" content="ismap — Internet speeds near you" />
     <meta property="og:description" content="Test your connection in seconds and explore a living, community-powered map of internet speeds." />
     <meta property="og:image" content="https://ismap.bitlabsbuild.com/og-image.jpg" />
     <meta property="og:image:secure_url" content="https://ismap.bitlabsbuild.com/og-image.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="IS Map — Community-powered internet speed map" />
+    <meta property="og:image:alt" content="ismap — Community-powered internet speed map" />
 
     <!-- Twitter / X Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="IS Map — Internet speeds near you" />
+    <meta name="twitter:title" content="ismap — Internet speeds near you" />
     <meta name="twitter:description" content="Test your connection in seconds and explore a living, community-powered map of internet speeds." />
     <meta name="twitter:image" content="https://ismap.bitlabsbuild.com/og-image.jpg" />
-    <meta name="twitter:image:alt" content="IS Map — Community-powered internet speed map" />
+    <meta name="twitter:image:alt" content="ismap — Community-powered internet speed map" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {})
+        })
+      }
+    </script>
   </body>
 </html>
