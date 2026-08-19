@@ -51,7 +51,44 @@ type SpeedPoint = {
    Client metadata detection
    ═══════════════════════════════════════════════════════════ */
 
-function detectClientMetadata(measuredDownloadMbps?: number) {
+type BrowserConnection = EventTarget & {
+  effectiveType?: string
+  downlink?: number
+  rtt?: number
+  saveData?: boolean
+  type?: string
+}
+
+function browserConnection(): BrowserConnection | undefined {
+  return (navigator as Navigator & {
+    connection?: BrowserConnection
+    mozConnection?: BrowserConnection
+    webkitConnection?: BrowserConnection
+  }).connection
+    || (navigator as Navigator & { mozConnection?: BrowserConnection }).mozConnection
+    || (navigator as Navigator & { webkitConnection?: BrowserConnection }).webkitConnection
+}
+
+function detectAccessMethod() {
+  if (typeof navigator === 'undefined') return { method: 'Unknown', detected: false }
+  const connection = browserConnection()
+  const type = connection?.type?.toLowerCase()
+  const effective = connection?.effectiveType?.toLowerCase()
+
+  if (type === 'wifi') return { method: 'Wi-Fi', detected: true }
+  if (type === 'ethernet') return { method: 'Ethernet', detected: true }
+  if (type === 'cellular') {
+    if (effective === '2g' || effective === 'slow-2g') return { method: '2G', detected: true }
+    if (effective === '3g') return { method: '3G', detected: true }
+    if (effective === '4g') return { method: '4G / cellular', detected: true }
+    return { method: 'Cellular', detected: true }
+  }
+  if (type === 'bluetooth') return { method: 'Bluetooth tethering', detected: true }
+  if (type === 'wimax') return { method: 'Fixed wireless', detected: true }
+  return { method: 'Unknown', detected: false }
+}
+
+function detectClientMetadata() {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
   let deviceType = 'Desktop'
   if (/iPad|tablet|PlayBook|Nexus 7|Nexus 10|SM-T/i.test(ua)) {
@@ -74,41 +111,7 @@ function detectClientMetadata(measuredDownloadMbps?: number) {
   else if (ua.includes('Chrome')) browser = 'Chrome'
   else if (ua.includes('Safari')) browser = 'Safari'
 
-  const conn = (navigator as Navigator & {
-    connection?: {
-      effectiveType?: string; downlink?: number; rtt?: number
-      saveData?: boolean; type?: string
-    }
-  }).connection
-
-  const rawEffective = conn?.effectiveType ? conn.effectiveType.toLowerCase() : ''
-  const isMobileDevice = deviceType === 'Mobile' || deviceType === 'Tablet'
-
-  let netType = 'Wi-Fi / Broadband'
-
-  if (measuredDownloadMbps !== undefined) {
-    if (measuredDownloadMbps >= 100) {
-      netType = isMobileDevice ? '5G / Ultra Mobile' : 'Fiber / High-Speed Wi-Fi'
-    } else if (measuredDownloadMbps >= 15) {
-      netType = isMobileDevice ? '4G LTE Cellular' : 'Broadband / Wi-Fi'
-    } else if (measuredDownloadMbps >= 3) {
-      netType = isMobileDevice ? '3G / 4G Cellular' : 'Wi-Fi'
-    } else if (rawEffective.includes('2g') && measuredDownloadMbps < 0.5) {
-      netType = '2G Cellular / Slow'
-    } else {
-      netType = isMobileDevice ? '4G LTE Cellular' : 'Wi-Fi / Broadband'
-    }
-  } else {
-    if (rawEffective === '4g') {
-      netType = isMobileDevice ? '4G LTE Cellular' : 'Broadband / Wi-Fi'
-    } else if (rawEffective === '3g') {
-      netType = isMobileDevice ? '3G Cellular' : 'Wi-Fi'
-    } else if (isMobileDevice) {
-      netType = '4G LTE Cellular'
-    } else {
-      netType = 'Wi-Fi / Broadband'
-    }
-  }
+  const netType = detectAccessMethod().method
 
   const deviceLabel = `${deviceType} (${os} · ${browser})`
 
@@ -234,7 +237,21 @@ function App() {
     () => localStorage.getItem('is-map-alias') || '',
   )
   const [shareCommunity, setShareCommunity] = useState(true)
-  const [accessMethod, setAccessMethod] = useState('Unknown')
+  const initialAccess = useMemo(() => detectAccessMethod(), [])
+  const [accessMethod, setAccessMethod] = useState(initialAccess.method)
+  const [accessAutoDetected, setAccessAutoDetected] = useState(initialAccess.detected)
+
+  useEffect(() => {
+    const connection = browserConnection()
+    if (!connection) return
+    const refresh = () => {
+      const detected = detectAccessMethod()
+      if (detected.detected) setAccessMethod(detected.method)
+      setAccessAutoDetected(detected.detected)
+    }
+    connection.addEventListener('change', refresh)
+    return () => connection.removeEventListener('change', refresh)
+  }, [])
   const [flaggedTests, setFlaggedTests] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem('is-map-flagged') ?? '[]')) } catch { return new Set() }
   })
@@ -577,7 +594,7 @@ function App() {
       setResult(nextResult)
       setStage('complete')
 
-      const clientMeta = detectClientMetadata(nextResult.download)
+      const clientMeta = detectClientMetadata()
       const historyItem: HistoryItem = {
         ...nextResult,
         id: crypto.randomUUID(),
@@ -585,7 +602,7 @@ function App() {
         location: locationName,
         isp,
         deviceLabel: clientMeta.deviceLabel,
-        netType: clientMeta.netType,
+        netType: accessMethod,
       }
       setHistory((current) => {
         const updated = [historyItem, ...current].slice(0, 20)
@@ -735,8 +752,8 @@ function App() {
 
               {/* Device & network badges */}
               <div className="meta-badge-row">
-                <span>{detectClientMetadata(result.download).deviceType === 'Mobile' ? <Smartphone size={13} /> : <Laptop size={13} />} {detectClientMetadata(result.download).deviceLabel}</span>
-                <span><Radio size={13} /> {detectClientMetadata(result.download).netType}</span>
+                <span>{detectClientMetadata().deviceType === 'Mobile' ? <Smartphone size={13} /> : <Laptop size={13} />} {detectClientMetadata().deviceLabel}</span>
+                <span><Radio size={13} /> {accessMethod}{accessAutoDetected ? ' · Auto-detected' : ''}</span>
                 <span><Wifi size={13} /> {isp}</span>
               </div>
             </>
@@ -762,10 +779,11 @@ function App() {
 
           <div className="test-preferences">
             <label>
-              Connection
-              <select value={accessMethod} onChange={(event) => setAccessMethod(event.target.value)}>
-                <option>Unknown</option><option>Wi-Fi</option><option>Ethernet</option>
-                <option>4G</option><option>5G</option><option>Fixed wireless</option><option>Satellite</option>
+              Connection {accessAutoDetected && <small>· Auto-detected</small>}
+              <select value={accessMethod} onChange={(event) => { setAccessMethod(event.target.value); setAccessAutoDetected(false) }}>
+                <option>Unknown</option><option>Wi-Fi</option><option>Ethernet</option><option>Cellular</option>
+                <option>2G</option><option>3G</option><option>4G / cellular</option><option>5G</option>
+                <option>Fixed wireless</option><option>Satellite</option><option>Bluetooth tethering</option>
               </select>
             </label>
             <label className="privacy-choice">
