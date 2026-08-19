@@ -16,7 +16,7 @@
 - 🗺️ **Interactive Coverage Map**: Color-coded Leaflet / OpenStreetMap visualization showing real-world connection nodes (Fast 90+ Mbps, Medium 50-89 Mbps, Fair <50 Mbps).
 - 📍 **Spatial Data Aggregation**: Postgres & Supabase backend with weighted spatial grouping (~150m radius, 20-minute time window).
 - 📊 **Data Export**: Export connection benchmarks directly into `.csv` format for analysis.
-- 🛡️ **Privacy First**: Exact coordinates remain anonymized, and personal test history is stored securely in local browser storage.
+- 🛡️ **Privacy First**: Public coordinates are rounded to neighbourhood precision, sharing is optional, and personal test history stays in local browser storage.
 - 🔍 **Search & Filters**: Filter map points by ISP provider, connection quality, speed range, or date window.
 
 ---
@@ -55,6 +55,8 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 
 ### 4. Run database migrations
 Execute the SQL migration files located in `supabase/migrations/` sequentially in your Supabase SQL Editor.
+
+The latest privacy migration is required for server-side coordinate reduction, metadata validation, and flag throttling. Client-side rounding is defense in depth and must not be treated as the only privacy boundary.
 
 ### 5. Start development server
 ```bash

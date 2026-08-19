@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export function useRecurringTest(onTest: () => void) {
-  const [isScheduled, setIsScheduled] = useState(false)
+  const [isScheduled, setIsScheduled] = useState(
+    () => localStorage.getItem('is-map-recurring-active') === 'true',
+  )
   const [intervalMinutes, setIntervalMinutes] = useState(
     () => Number(localStorage.getItem('is-map-recurring-interval') || '30'),
   )
@@ -18,6 +20,7 @@ export function useRecurringTest(onTest: () => void) {
       timerRef.current = null
     }
     setIsScheduled(false)
+    localStorage.removeItem('is-map-recurring-active')
   }, [])
 
   const start = useCallback(
@@ -28,6 +31,7 @@ export function useRecurringTest(onTest: () => void) {
       stop()
       timerRef.current = setInterval(() => onTestRef.current(), mins * 60_000)
       setIsScheduled(true)
+      localStorage.setItem('is-map-recurring-active', 'true')
     },
     [intervalMinutes, stop],
   )
@@ -38,6 +42,11 @@ export function useRecurringTest(onTest: () => void) {
     },
     [],
   )
+
+  useEffect(() => {
+    if (!isScheduled || timerRef.current) return
+    timerRef.current = setInterval(() => onTestRef.current(), intervalMinutes * 60_000)
+  }, [intervalMinutes, isScheduled])
 
   return { isScheduled, intervalMinutes, setIntervalMinutes, start, stop }
 }

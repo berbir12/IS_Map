@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
+/* oxlint-disable react/only-export-components -- provider and hook are one public context API */
+
 type Theme = 'light' | 'dark'
 type ThemeContextValue = { theme: Theme; toggleTheme: () => void }
 

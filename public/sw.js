@@ -1,4 +1,4 @@
-const CACHE_NAME = 'is-map-v3'
+const CACHE_NAME = 'is-map-v4'
 const STATIC_ASSETS = ['/', '/index.html', '/favicon.svg', '/favicon.png', '/favicon.ico', '/logo.svg', '/logo.png']
 
 self.addEventListener('install', (event) => {

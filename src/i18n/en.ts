@@ -32,12 +32,12 @@ export const en: Record<string, string> = {
   'test.noteLocating': 'Allow location access in your browser to place your result.',
   'test.noteTesting': 'Measuring download, upload, and response time…',
   'test.saving': 'Saving result to the shared map…',
-  'test.saved': 'Saved permanently · Visible on the shared map',
+  'test.saved': 'Saved with an approximate location · Visible on the shared map',
   'test.saveError': 'Result not saved · Check location and database setup',
   'test.finePrint':
-    'No signup required · Browser-provided coordinates are shared with the result',
+    'No signup required · Public coordinates are reduced to neighbourhood precision',
   'test.errorLocation':
-    'A precise location is required before this test can be added to the map.',
+    'Location was unavailable, so this result will remain only in your browser.',
   'test.errorConnection':
     'The test server could not be reached. Check your connection and try again.',
 
@@ -101,7 +101,7 @@ export const en: Record<string, string> = {
   'how.title': 'One test makes the map smarter.',
   'how.step1': 'Share your location',
   'how.step1Desc':
-    'Your browser provides the coordinates used to place the measurement accurately on the map.',
+    'Your browser locates the test, then we reduce it to neighbourhood precision before sharing.',
   'how.step2': 'Run a quick test',
   'how.step2Desc':
     'We estimate download speed, upload speed, and latency in under a minute.',

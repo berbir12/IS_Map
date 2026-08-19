@@ -16,6 +16,8 @@ import {
 import { useTheme } from './context/ThemeContext'
 import { useI18n } from './context/I18nContext'
 import { useRecurringTest } from './hooks/useRecurringTest'
+import { measureConnection } from './lib/measurement'
+import { numericMedian, practicalCapacity, privacySafeCoordinates } from './lib/statistics'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
@@ -191,41 +193,6 @@ function qualityFor(result: TestResult) {
 
 /* ── Measurement functions ─────────────────────────────── */
 
-async function measurePingAndJitter(): Promise<{ ping: number; jitter: number }> {
-  const samples: number[] = []
-  for (let i = 0; i < 5; i += 1) {
-    const started = performance.now()
-    const response = await fetch(`https://speed.cloudflare.com/__down?bytes=1&t=${Date.now()}-${i}`, { cache: 'no-store' })
-    if (!response.ok) throw new Error('Ping test failed')
-    await response.arrayBuffer()
-    samples.push(performance.now() - started)
-  }
-  const ping = Math.round(Math.min(...samples))
-  const mean = samples.reduce((s, v) => s + v, 0) / samples.length
-  const jitter = Math.round(Math.sqrt(samples.reduce((s, v) => s + (v - mean) ** 2, 0) / samples.length))
-  return { ping, jitter }
-}
-
-async function measureDownloadSample(): Promise<number> {
-  const bytes = 5_000_000
-  const started = performance.now()
-  const response = await fetch(`https://speed.cloudflare.com/__down?bytes=${bytes}&t=${Date.now()}`, { cache: 'no-store' })
-  if (!response.ok) throw new Error('Download test failed')
-  const payload = await response.arrayBuffer()
-  const seconds = (performance.now() - started) / 1000
-  return (payload.byteLength * 8) / seconds / 1_000_000
-}
-
-async function measureUploadSample(): Promise<number> {
-  const payload = new Uint8Array(1_000_000)
-  crypto.getRandomValues(payload.subarray(0, 65_536))
-  const started = performance.now()
-  const response = await fetch(`https://speed.cloudflare.com/__up?t=${Date.now()}`, { method: 'POST', body: payload, cache: 'no-store' })
-  if (!response.ok) throw new Error('Upload test failed')
-  const seconds = (performance.now() - started) / 1000
-  return (payload.byteLength * 8) / seconds / 1_000_000
-}
-
 /* ═══════════════════════════════════════════════════════════
    App
    ═══════════════════════════════════════════════════════════ */
@@ -266,6 +233,8 @@ function App() {
   const [contributorAlias, setContributorAlias] = useState(
     () => localStorage.getItem('is-map-alias') || '',
   )
+  const [shareCommunity, setShareCommunity] = useState(true)
+  const [accessMethod, setAccessMethod] = useState('Unknown')
   const [flaggedTests, setFlaggedTests] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem('is-map-flagged') ?? '[]')) } catch { return new Set() }
   })
@@ -303,6 +272,7 @@ function App() {
   const providers = [...new Set(communityTests.map((test) => test.isp).filter(Boolean))] as string[]
 
   const filteredPoints = points.filter((point) => {
+    if ((point.flagCount || 0) >= 3) return false
     const matchingTest = communityTests.find((test) => test.latitude === point.coords[0] && test.longitude === point.coords[1] && Number(test.download_mbps) === point.speed)
     const speedMatches = speedFilter === 'all' || (speedFilter === 'fast' && point.speed >= 90) || (speedFilter === 'medium' && point.speed >= 50 && point.speed < 90) || (speedFilter === 'slow' && point.speed < 50)
     const providerMatches = providerFilter === 'all' || matchingTest?.isp === providerFilter
@@ -338,24 +308,25 @@ function App() {
 
   /* ── ISP leaderboard ─────────────────────────────────── */
   const ispLeaderboard = useMemo(() => {
-    const ispMap = new Map<string, { totalDown: number; totalUp: number; totalPing: number; count: number }>()
+    const ispMap = new Map<string, { down: number[]; up: number[]; ping: number[]; count: number }>()
     communityTests.forEach((t) => {
       if (!t.isp) return
-      const entry = ispMap.get(t.isp) || { totalDown: 0, totalUp: 0, totalPing: 0, count: 0 }
-      entry.totalDown += Number(t.download_mbps)
-      entry.totalUp += Number(t.upload_mbps)
-      entry.totalPing += Number(t.ping_ms)
-      entry.count += 1
+      const entry = ispMap.get(t.isp) || { down: [], up: [], ping: [], count: 0 }
+      entry.down.push(Number(t.download_mbps))
+      entry.up.push(Number(t.upload_mbps))
+      entry.ping.push(Number(t.ping_ms))
+      entry.count += Math.max(1, t.sample_count || 1)
       ispMap.set(t.isp, entry)
     })
     return [...ispMap.entries()]
       .map(([name, data]) => ({
         name,
-        avgDown: data.totalDown / data.count,
-        avgUp: data.totalUp / data.count,
-        avgPing: data.totalPing / data.count,
+        avgDown: numericMedian(data.down),
+        avgUp: numericMedian(data.up),
+        avgPing: numericMedian(data.ping),
         count: data.count,
       }))
+      .filter((entry) => entry.count >= 3)
       .sort((a, b) => b.avgDown - a.avgDown)
       .slice(0, 10)
   }, [communityTests])
@@ -377,6 +348,11 @@ function App() {
     const channel = client
       .channel('public-speed-tests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'speed_tests' }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const removed = payload.old as Pick<CommunityTest, 'id'>
+          setCommunityTests((current) => current.filter((test) => test.id !== removed.id))
+          return
+        }
         const changed = payload.new as CommunityTest
         setCommunityTests((current) => [changed, ...current.filter((test) => test.id !== changed.id)].slice(0, 1000))
       })
@@ -590,45 +566,14 @@ function App() {
     setLiveSpeed(null)
     setSaveState('idle')
     const testLocation = await requestLocation()
-    if (!testLocation) {
-      setErrorMessage(t('test.errorLocation'))
-      setStage('error')
-      return
-    }
     setStage('testing')
     try {
-      // Ping + jitter (5 samples)
-      const { ping, jitter } = await measurePingAndJitter()
-      setProgress(10)
-
-      // Multi-sample download (3 samples)
-      const dlSamples: number[] = []
-      for (let i = 0; i < 3; i++) {
-        const sample = await measureDownloadSample()
-        dlSamples.push(sample)
-        const avg = dlSamples.reduce((s, v) => s + v, 0) / dlSamples.length
-        setLiveSpeed(avg)
-        setProgress(10 + (i + 1) * 17) // 27, 44, 61
-      }
-      const download = dlSamples.reduce((s, v) => s + v, 0) / dlSamples.length
+      const nextResult = await measureConnection((nextProgress, speed) => {
+        setProgress(Math.min(99, nextProgress))
+        setLiveSpeed(speed ?? null)
+      })
       setLiveSpeed(null)
-
-      // Multi-sample upload (2 samples)
-      const ulSamples: number[] = []
-      for (let i = 0; i < 2; i++) {
-        const sample = await measureUploadSample()
-        ulSamples.push(sample)
-        setProgress(61 + (i + 1) * 20) // 81, 101→100
-      }
       setProgress(100)
-      const upload = ulSamples.reduce((s, v) => s + v, 0) / ulSamples.length
-
-      const nextResult = {
-        download: Number(download.toFixed(1)),
-        upload: Number(upload.toFixed(1)),
-        ping,
-        jitter,
-      }
       setResult(nextResult)
       setStage('complete')
 
@@ -648,16 +593,17 @@ function App() {
         return updated
       })
 
-      if (supabase && testLocation && locationName !== t('location.unavailable') && locationName !== t('location.detect')) {
+      if (shareCommunity && supabase && testLocation && locationName !== t('location.unavailable') && locationName !== t('location.detect')) {
         setSaveState('saving')
         try {
+          const safeLocation = privacySafeCoordinates(testLocation[0], testLocation[1])
           const saved = await saveCommunityTest({
-            latitude: testLocation[0],
-            longitude: testLocation[1],
+            latitude: safeLocation[0],
+            longitude: safeLocation[1],
             download_mbps: nextResult.download,
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
-            connection_type: `${clientMeta.netType} · ${clientMeta.deviceLabel}`,
+            connection_type: `${accessMethod} · ${clientMeta.deviceLabel}`,
             isp,
             city: locationName,
             country: null,
@@ -679,7 +625,7 @@ function App() {
       setStage('error')
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locationName, isp, contributorAlias, t])
+  }, [locationName, isp, contributorAlias, shareCommunity, accessMethod, t])
 
   /* ── Recurring test ──────────────────────────────────── */
   const { isScheduled, intervalMinutes, start: startRecurring, stop: stopRecurring } = useRecurringTest(beginTest)
@@ -769,6 +715,12 @@ function App() {
                 </div>
               </div>
 
+              <div className="capacity-line" aria-label="What this connection can handle">
+                <span><b>{practicalCapacity(result.download, result.upload, result.ping).streams4k}</b> simultaneous 4K streams</span>
+                <span><b>{practicalCapacity(result.download, result.upload, result.ping).calls}</b> HD video calls</span>
+                <span>{practicalCapacity(result.download, result.upload, result.ping).gaming}</span>
+              </div>
+
               {/* Speed comparison vs area */}
               {areaAverage && (
                 <div className="comparison-line">
@@ -808,10 +760,26 @@ function App() {
             maxLength={20}
           />
 
+          <div className="test-preferences">
+            <label>
+              Connection
+              <select value={accessMethod} onChange={(event) => setAccessMethod(event.target.value)}>
+                <option>Unknown</option><option>Wi-Fi</option><option>Ethernet</option>
+                <option>4G</option><option>5G</option><option>Fixed wireless</option><option>Satellite</option>
+              </select>
+            </label>
+            <label className="privacy-choice">
+              <input type="checkbox" checked={shareCommunity} onChange={(event) => setShareCommunity(event.target.checked)} />
+              Share on the map using an approximate location
+            </label>
+          </div>
+
+          <p className="data-usage-note">Adaptive test · Uses up to approximately 51 MB of data · Avoid testing on a limited plan</p>
+
           <p className={`fine-print save-${saveState}`}>
             {stage === 'complete'
-              ? (saveState === 'saving' ? t('test.saving') : saveState === 'saved' ? t('test.saved') : saveState === 'error' ? t('test.saveError') : t('test.finePrint'))
-              : t('test.finePrint')}
+              ? (!shareCommunity ? 'Saved only in this browser · Not shared publicly' : saveState === 'saving' ? t('test.saving') : saveState === 'saved' ? t('test.saved') : saveState === 'error' ? t('test.saveError') : t('test.finePrint'))
+              : 'Testing works without sharing. Map submissions use an approximate location.'}
           </p>
 
           {/* Recurring test */}
@@ -880,10 +848,11 @@ function App() {
           <div className="isp-leaderboard">
             <div className="lb-header">
               <h3><Trophy size={16} /> {t('leaderboard.title')}</h3>
+              <small>Median results · Minimum 3 samples · Higher sample counts are more reliable</small>
             </div>
             <table>
               <thead>
-                <tr><th>#</th><th>{t('leaderboard.provider')}</th><th>{t('leaderboard.avgDown')}</th><th>{t('leaderboard.avgUp')}</th><th>{t('leaderboard.ping')}</th><th>{t('leaderboard.tests')}</th></tr>
+                <tr><th>#</th><th>{t('leaderboard.provider')}</th><th>Median ↓</th><th>Median ↑</th><th>Median ping</th><th>{t('leaderboard.tests')}</th></tr>
               </thead>
               <tbody>
                 {ispLeaderboard.map((entry, i) => (

@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import { en } from '../i18n/en'
 
+/* oxlint-disable react/only-export-components -- provider and hook are one public context API */
+
 type Translations = Record<string, string>
 const locales: Record<string, Translations> = { en }
 
