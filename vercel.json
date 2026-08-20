@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/x/ismap-v7", "destination": "/social/ismap-v7.html" },
     { "source": "/x/:path*", "destination": "/index.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
