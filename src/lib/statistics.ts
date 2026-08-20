@@ -5,11 +5,6 @@ export function numericMedian(values: number[]) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
-export function privacySafeCoordinates(latitude: number, longitude: number, precision = 2): [number, number] {
-  const factor = 10 ** precision
-  return [Math.round(latitude * factor) / factor, Math.round(longitude * factor) / factor]
-}
-
 export function practicalCapacity(downloadMbps: number, uploadMbps: number, pingMs: number) {
   return {
     streams4k: Math.max(0, Math.floor(downloadMbps / 25)),

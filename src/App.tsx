@@ -15,7 +15,7 @@ import { useTheme } from './context/ThemeContext'
 import { useI18n } from './context/I18nContext'
 import { useRecurringTest } from './hooks/useRecurringTest'
 import { measureConnection } from './lib/measurement'
-import { numericMedian, practicalCapacity, privacySafeCoordinates } from './lib/statistics'
+import { numericMedian, practicalCapacity } from './lib/statistics'
 import type { SpeedPoint } from './components/CommunityMap'
 import './App.css'
 
@@ -612,10 +612,9 @@ function App() {
       if (shareCommunity && supabase && testLocation && locationName !== t('location.unavailable') && locationName !== t('location.detect')) {
         setSaveState('saving')
         try {
-          const safeLocation = privacySafeCoordinates(testLocation[0], testLocation[1])
           const saved = await saveCommunityTest({
-            latitude: safeLocation[0],
-            longitude: safeLocation[1],
+            latitude: testLocation[0],
+            longitude: testLocation[1],
             download_mbps: nextResult.download,
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
@@ -791,7 +790,7 @@ function App() {
             </label>
             <label className="privacy-choice">
               <input type="checkbox" checked={shareCommunity} onChange={(event) => setShareCommunity(event.target.checked)} />
-              Share on the map using an approximate location
+              Share my precise location on the public map
             </label>
           </div>
 
@@ -800,7 +799,7 @@ function App() {
           <p className={`fine-print save-${saveState}`}>
             {stage === 'complete'
               ? (!shareCommunity ? 'Saved only in this browser · Not shared publicly' : saveState === 'saving' ? t('test.saving') : saveState === 'saved' ? t('test.saved') : saveState === 'error' ? t('test.saveError') : t('test.finePrint'))
-              : 'Testing works without sharing. Map submissions use an approximate location.'}
+              : 'Testing works without sharing. Public map submissions include precise coordinates.'}
           </p>
 
           {/* Recurring test */}
