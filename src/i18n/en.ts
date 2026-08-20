@@ -126,7 +126,7 @@ export const en: Record<string, string> = {
   'alias.placeholder': 'Your alias (optional)',
 
   /* ── Community trust ─────────────────────────────────── */
-  'verified': 'Verified',
+  'verified': '3+ samples',
   'flag': 'Flag',
   'flagged': 'Flagged',
 

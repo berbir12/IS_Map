@@ -47,20 +47,20 @@ export async function measureLatency() {
   return { ping: Math.round(ping), jitter: Math.round(median(usable.map((sample) => Math.abs(sample - ping)))) }
 }
 
-export async function measureConnection(onProgress: (progress: number, liveSpeed?: number) => void): Promise<NetworkMeasurement> {
+export async function measureConnection(onProgress: (progress: number, liveSpeed: number | undefined, phase: string) => void): Promise<NetworkMeasurement> {
   const { ping, jitter } = await measureLatency()
-  onProgress(12)
+  onProgress(12, undefined, 'Measuring latency')
   const downloads: number[] = []
   for (const [index, bytes] of [1_000_000, 5_000_000, 10_000_000, 20_000_000].entries()) {
     const sample = await timedDownload(bytes)
     if (index > 0) downloads.push(sample)
-    onProgress(12 + (index + 1) * 13, median(downloads.length ? downloads : [sample]))
+    onProgress(12 + (index + 1) * 13, median(downloads.length ? downloads : [sample]), 'Testing download')
   }
   const uploads: number[] = []
   for (const [index, bytes] of [500_000, 2_000_000, 5_000_000].entries()) {
     const sample = await timedUpload(bytes)
     if (index > 0) uploads.push(sample)
-    onProgress(65 + (index + 1) * 11)
+    onProgress(65 + (index + 1) * 11, undefined, 'Testing upload')
   }
   return { download: Number(median(downloads).toFixed(1)), upload: Number(median(uploads).toFixed(1)), ping, jitter }
 }

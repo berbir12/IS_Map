@@ -20,6 +20,8 @@ export type CommunityTest = {
   jitter_ms: number | null
 }
 
+export type MapBounds = { north: number; south: number; east: number; west: number }
+
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
@@ -28,27 +30,36 @@ export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, { auth: { persistSession: false } })
   : null
 
-export async function loadCommunityTests() {
+export async function loadCommunityTests(bounds?: MapBounds) {
   if (!supabase) return []
 
+  const withinBounds = <T extends { gte: (column: string, value: number) => T; lte: (column: string, value: number) => T }>(query: T) => {
+    if (!bounds) return query
+    let bounded = query.gte('latitude', bounds.south).lte('latitude', bounds.north)
+    if (bounds.west <= bounds.east) bounded = bounded.gte('longitude', bounds.west).lte('longitude', bounds.east)
+    return bounded
+  }
+
   // Try full query with community columns
-  const fullResult = await supabase
+  const fullQuery = supabase
     .from('speed_tests')
     .select(
       'id,latitude,longitude,download_mbps,upload_mbps,ping_ms,connection_type,isp,city,country,created_at,updated_at,sample_count,is_verified,flag_count,contributor_alias,jitter_ms',
     )
     .order('updated_at', { ascending: false })
-    .limit(1000)
+    .limit(2000)
+  const fullResult = await withinBounds(fullQuery)
   if (!fullResult.error) return (fullResult.data ?? []) as CommunityTest[]
 
   // Fallback without community columns
-  const mediumResult = await supabase
+  const mediumQuery = supabase
     .from('speed_tests')
     .select(
       'id,latitude,longitude,download_mbps,upload_mbps,ping_ms,connection_type,isp,city,country,created_at,updated_at,sample_count',
     )
     .order('updated_at', { ascending: false })
-    .limit(1000)
+    .limit(2000)
+  const mediumResult = await withinBounds(mediumQuery)
   if (!mediumResult.error)
     return (mediumResult.data ?? []).map((t) => ({
       ...t,
@@ -59,11 +70,12 @@ export async function loadCommunityTests() {
     })) as CommunityTest[]
 
   // Fallback for base migration only
-  const coreResult = await supabase
+  const coreQuery = supabase
     .from('speed_tests')
     .select('id,latitude,longitude,download_mbps,upload_mbps,ping_ms,connection_type,created_at')
     .order('created_at', { ascending: false })
-    .limit(1000)
+    .limit(2000)
+  const coreResult = await withinBounds(coreQuery)
   if (coreResult.error) throw coreResult.error
   return (coreResult.data ?? []).map((test) => ({
     ...test,

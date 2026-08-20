@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
-import L from 'leaflet'
-import 'leaflet.heat'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BadgeCheck, ChevronDown, Clock3, Download, Flag, History,
-  Image as ImageIcon, Laptop, Layers, LocateFixed, MapPin, Moon, Radio,
+  Activity, ChevronDown, Clock3, Download, History,
+  Image as ImageIcon, Laptop, LocateFixed, MapPin, Moon, Radio,
   Search, Share2, ShieldCheck, SlidersHorizontal, Smartphone, Sun, Timer,
   Trophy, Upload, Wifi, X, Zap,
 } from 'lucide-react'
@@ -12,14 +9,17 @@ import { Analytics } from '@vercel/analytics/react'
 import {
   isSupabaseConfigured, loadCommunityTests, saveCommunityTest,
   flagCommunityTest, supabase, type CommunityTest,
+  type MapBounds,
 } from './lib/supabase'
 import { useTheme } from './context/ThemeContext'
 import { useI18n } from './context/I18nContext'
 import { useRecurringTest } from './hooks/useRecurringTest'
 import { measureConnection } from './lib/measurement'
 import { numericMedian, practicalCapacity, privacySafeCoordinates } from './lib/statistics'
-import 'leaflet/dist/leaflet.css'
+import type { SpeedPoint } from './components/CommunityMap'
 import './App.css'
+
+const CommunityMap = lazy(() => import('./components/CommunityMap'))
 
 /* ═══════════════════════════════════════════════════════════
    Types
@@ -32,20 +32,7 @@ type HistoryItem = TestResult & {
   deviceLabel?: string; netType?: string
 }
 type SpeedFilter = 'all' | 'fast' | 'medium' | 'slow'
-
-type SpeedPoint = {
-  id?: string
-  name: string
-  region: string
-  coords: [number, number]
-  speed: number
-  type: string
-  lastTest?: string
-  sampleCount?: number
-  isVerified?: boolean
-  flagCount?: number
-  contributorAlias?: string | null
-}
+type RankingNetwork = 'all' | 'fixed' | 'mobile'
 
 /* ═══════════════════════════════════════════════════════════
    Client metadata detection
@@ -70,7 +57,7 @@ function browserConnection(): BrowserConnection | undefined {
 }
 
 function detectAccessMethod() {
-  if (typeof navigator === 'undefined') return { method: 'Unknown', detected: false }
+  if (typeof navigator === 'undefined') return { method: 'Wi-Fi / Ethernet', detected: false }
   const connection = browserConnection()
   const type = connection?.type?.toLowerCase()
   const effective = connection?.effectiveType?.toLowerCase()
@@ -85,7 +72,22 @@ function detectAccessMethod() {
   }
   if (type === 'bluetooth') return { method: 'Bluetooth tethering', detected: true }
   if (type === 'wimax') return { method: 'Fixed wireless', detected: true }
-  return { method: 'Unknown', detected: false }
+  const mobileDevice = /Mobi|Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent)
+  return { method: mobileDevice ? 'Cellular' : 'Wi-Fi / Ethernet', detected: false }
+}
+
+function refineCellularGeneration(method: string, result: TestResult) {
+  if (!/cellular|\b[2345]g\b/i.test(method)) return { method, estimated: false }
+  if (/\b2g\b/i.test(method)) return { method: '2G', estimated: false }
+  if (/\b3g\b/i.test(method)) return { method: '3G', estimated: false }
+
+  // The Network Information API reports 5G connections as effectiveType "4g".
+  // Use measured performance only to mark a likely 5G connection, never as certainty.
+  if (result.download >= 100 && result.upload >= 10 && result.ping <= 60) {
+    return { method: 'Likely 5G', estimated: true }
+  }
+  if (result.download >= 8) return { method: '4G', estimated: method === 'Cellular' }
+  return { method: '3G', estimated: true }
 }
 
 function detectClientMetadata() {
@@ -121,28 +123,6 @@ function detectClientMetadata() {
 /* ═══════════════════════════════════════════════════════════
    Map helper components
    ═══════════════════════════════════════════════════════════ */
-
-function MapFocus({ coords }: { coords: [number, number] }) {
-  const map = useMap()
-  useEffect(() => { map.flyTo(coords, 12, { duration: 1.2 }) }, [coords, map])
-  return null
-}
-
-function HeatmapLayer({ points }: { points: SpeedPoint[] }) {
-  const map = useMap()
-  useEffect(() => {
-    if (!points.length) return undefined
-    const data = points.map((p) => [
-      p.coords[0], p.coords[1], Math.min(p.speed / 150, 1),
-    ] as [number, number, number])
-    const layer = (L as typeof L & { heatLayer: (data: [number, number, number][], opts: Record<string, unknown>) => L.Layer }).heatLayer(data, {
-      radius: 25, blur: 15, maxZoom: 17, max: 1.0,
-      gradient: { 0.3: '#ef6a5b', 0.6: '#f2a541', 0.85: '#33a566', 1.0: '#1a7a45' },
-    }).addTo(map)
-    return () => { map.removeLayer(layer) }
-  }, [map, points])
-  return null
-}
 
 /* ═══════════════════════════════════════════════════════════
    Trend chart (SVG sparkline for history)
@@ -180,12 +160,6 @@ function TrendChart({ data }: { data: HistoryItem[] }) {
    Speed helpers
    ═══════════════════════════════════════════════════════════ */
 
-function colorFor(speed: number) {
-  if (speed >= 90) return '#33a566'
-  if (speed >= 50) return '#f2a541'
-  return '#ef6a5b'
-}
-
 function qualityFor(result: TestResult) {
   if (result.download >= 100 && result.ping <= 30) return { label: 'Excellent', detail: 'Great for gaming, 4K streaming, and large downloads.' }
   if (result.download >= 50 && result.ping <= 60) return { label: 'Very good', detail: 'Comfortable for streaming, calls, and remote work.' }
@@ -207,14 +181,16 @@ function App() {
   /* ── Core state ──────────────────────────────────────── */
   const [stage, setStage] = useState<Stage>('idle')
   const [progress, setProgress] = useState(0)
+  const [testPhase, setTestPhase] = useState('Preparing test')
   const [liveSpeed, setLiveSpeed] = useState<number | null>(null)
   const [location, setLocation] = useState<[number, number] | null>(null)
   const [mapCenter, setMapCenter] = useState<[number, number] | null>(null)
   const [locationName, setLocationName] = useState(t('location.detect'))
-  const [showPanel, setShowPanel] = useState(true)
+  const [showPanel, setShowPanel] = useState(() => window.innerWidth > 768)
   const [result, setResult] = useState<TestResult | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [communityTests, setCommunityTests] = useState<CommunityTest[]>([])
+  const [mapBounds, setMapBounds] = useState<MapBounds | undefined>()
   const [syncState, setSyncState] = useState<'offline' | 'loading' | 'live' | 'error'>(isSupabaseConfigured ? 'loading' : 'offline')
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [isp, setIsp] = useState(t('unknownProvider'))
@@ -232,7 +208,11 @@ function App() {
   /* ── New feature state ───────────────────────────────── */
   const [showHeatmap, setShowHeatmap] = useState(false)
   const [showLeaderboard, setShowLeaderboard] = useState(false)
+  const [rankingNetwork, setRankingNetwork] = useState<RankingNetwork>('all')
+  const [rankingMinimum, setRankingMinimum] = useState(3)
+  const [rankingPeakOnly, setRankingPeakOnly] = useState(false)
   const [showRecurring, setShowRecurring] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [contributorAlias, setContributorAlias] = useState(
     () => localStorage.getItem('is-map-alias') || '',
   )
@@ -328,6 +308,14 @@ function App() {
     const ispMap = new Map<string, { down: number[]; up: number[]; ping: number[]; count: number }>()
     communityTests.forEach((t) => {
       if (!t.isp) return
+      const connection = (t.connection_type || '').toLowerCase()
+      const isMobile = /cellular|\b[2345]g\b/.test(connection)
+      if (rankingNetwork === 'mobile' && !isMobile) return
+      if (rankingNetwork === 'fixed' && isMobile) return
+      if (rankingPeakOnly) {
+        const hour = new Date(t.updated_at).getHours()
+        if (hour < 18 || hour >= 23) return
+      }
       const entry = ispMap.get(t.isp) || { down: [], up: [], ping: [], count: 0 }
       entry.down.push(Number(t.download_mbps))
       entry.up.push(Number(t.upload_mbps))
@@ -343,25 +331,30 @@ function App() {
         avgPing: numericMedian(data.ping),
         count: data.count,
       }))
-      .filter((entry) => entry.count >= 3)
+      .filter((entry) => entry.count >= rankingMinimum)
       .sort((a, b) => b.avgDown - a.avgDown)
       .slice(0, 10)
-  }, [communityTests])
+  }, [communityTests, rankingMinimum, rankingNetwork, rankingPeakOnly])
 
   /* ── Supabase realtime ───────────────────────────────── */
 
   useEffect(() => {
-    if (!supabase) return
-    const client = supabase
+    if (!supabase || !mapBounds) return
     let active = true
-    loadCommunityTests()
+    setSyncState('loading')
+    loadCommunityTests(mapBounds)
       .then((tests) => {
         if (!active) return
         setCommunityTests(tests)
         setSyncState('live')
       })
       .catch(() => active && setSyncState('error'))
+    return () => { active = false }
+  }, [mapBounds])
 
+  useEffect(() => {
+    if (!supabase) return
+    const client = supabase
     const channel = client
       .channel('public-speed-tests')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'speed_tests' }, (payload) => {
@@ -376,7 +369,6 @@ function App() {
       .subscribe()
 
     return () => {
-      active = false
       void client.removeChannel(channel)
     }
   }, [])
@@ -431,6 +423,7 @@ function App() {
       const [place] = await response.json()
       if (place) {
         setMapCenter([Number(place.lat), Number(place.lon)])
+        setShowPanel(true)
       }
     } finally { setSearching(false) }
   }
@@ -520,7 +513,7 @@ function App() {
           Connection_Info: item.connection_type || `${currentMeta.netType} · ${currentMeta.deviceLabel}`,
           City: item.city || 'Unknown',
           ISP: item.isp || 'Unknown',
-          Verified: item.is_verified ? 'Yes' : 'No',
+          Repeated_samples: item.sample_count >= 3 ? 'Yes' : 'No',
           Contributor: item.contributor_alias || '',
         }))
       : history.map((item) => ({
@@ -580,14 +573,17 @@ function App() {
     setResult(null)
     setErrorMessage('')
     setProgress(0)
+    setTestPhase('Finding your location')
     setLiveSpeed(null)
     setSaveState('idle')
     const testLocation = await requestLocation()
     setStage('testing')
     try {
-      const nextResult = await measureConnection((nextProgress, speed) => {
+      setTestPhase('Measuring latency')
+      const nextResult = await measureConnection((nextProgress, speed, phase) => {
         setProgress(Math.min(99, nextProgress))
         setLiveSpeed(speed ?? null)
+        setTestPhase(phase)
       })
       setLiveSpeed(null)
       setProgress(100)
@@ -595,6 +591,9 @@ function App() {
       setStage('complete')
 
       const clientMeta = detectClientMetadata()
+      const resolvedAccess = refineCellularGeneration(accessMethod, nextResult)
+      setAccessMethod(resolvedAccess.method)
+      if (resolvedAccess.estimated) setAccessAutoDetected(false)
       const historyItem: HistoryItem = {
         ...nextResult,
         id: crypto.randomUUID(),
@@ -602,7 +601,7 @@ function App() {
         location: locationName,
         isp,
         deviceLabel: clientMeta.deviceLabel,
-        netType: accessMethod,
+        netType: resolvedAccess.method,
       }
       setHistory((current) => {
         const updated = [historyItem, ...current].slice(0, 20)
@@ -620,7 +619,7 @@ function App() {
             download_mbps: nextResult.download,
             upload_mbps: nextResult.upload,
             ping_ms: nextResult.ping,
-            connection_type: `${accessMethod} · ${clientMeta.deviceLabel}`,
+            connection_type: `${resolvedAccess.method} · ${clientMeta.deviceLabel}`,
             isp,
             city: locationName,
             country: null,
@@ -706,7 +705,7 @@ function App() {
                 : stage === 'testing' && liveSpeed !== null
                 ? <><strong>{liveSpeed.toFixed(1)}</strong><span>Mbps ↓</span></>
                 : stage === 'testing'
-                ? <><strong>{progress}</strong><span>% complete</span></>
+                ? <><strong>{progress}</strong><span>{testPhase}</span></>
                 : <LocateFixed size={34} />
               }
             </div>
@@ -767,22 +766,26 @@ function App() {
             {stage === 'idle' ? t('test.start') : stage === 'complete' || stage === 'error' ? t('test.retry') : stage === 'locating' ? t('test.locatingBtn') : `Testing… ${progress}%`}
           </button>
 
-          {/* Contributor alias */}
-          <input
+          <button className="advanced-toggle" type="button" onClick={() => setShowAdvanced((shown) => !shown)} aria-expanded={showAdvanced}>
+            {showAdvanced ? 'Hide advanced options' : 'Advanced options'} <ChevronDown size={14} />
+          </button>
+
+          {showAdvanced && <div className="advanced-panel">
+            <input
             className="alias-input"
             type="text"
             placeholder={t('alias.placeholder')}
             value={contributorAlias}
             onChange={(e) => { setContributorAlias(e.target.value); localStorage.setItem('is-map-alias', e.target.value) }}
             maxLength={20}
-          />
+            />
 
           <div className="test-preferences">
             <label>
-              Connection {accessAutoDetected && <small>· Auto-detected</small>}
+              Connection <small>· {accessAutoDetected ? 'Auto-detected' : 'Estimated from device'}</small>
               <select value={accessMethod} onChange={(event) => { setAccessMethod(event.target.value); setAccessAutoDetected(false) }}>
-                <option>Unknown</option><option>Wi-Fi</option><option>Ethernet</option><option>Cellular</option>
-                <option>2G</option><option>3G</option><option>4G / cellular</option><option>5G</option>
+                <option>Wi-Fi / Ethernet</option><option>Wi-Fi</option><option>Ethernet</option><option>Cellular</option>
+                <option>2G</option><option>3G</option><option>4G / cellular</option><option>4G</option><option>Likely 5G</option><option>5G</option>
                 <option>Fixed wireless</option><option>Satellite</option><option>Bluetooth tethering</option>
               </select>
             </label>
@@ -828,6 +831,8 @@ function App() {
               </>
             )}
           </div>
+          <p className="recurring-disclosure">Scheduled tests run only while this page remains open.</p>
+          </div>}
         </div>
       </section>
 
@@ -851,6 +856,7 @@ function App() {
             <button disabled={searching}>{searching ? t('map.finding') : t('map.go')}</button>
           </form>
           <button className={showFilters ? 'selected' : ''} onClick={() => setShowFilters((value) => !value)}><SlidersHorizontal size={16} /> {t('map.filters')}{speedFilter !== 'all' || providerFilter !== 'all' || daysFilter !== 30 ? ' •' : ''}</button>
+          {communityTests.length > 0 && <button onClick={() => setShowPanel(true)}><Activity size={16} /> Summary</button>}
           {history.length > 0 && <button onClick={() => setShowHistory(true)}><History size={16} /> {t('map.history')}</button>}
           <button className={showLeaderboard ? 'selected' : ''} onClick={() => setShowLeaderboard((v) => !v)}><Trophy size={16} /> {t('map.ispRanking')}</button>
           <button onClick={exportData} title="Export speed test dataset as CSV" aria-label="Export dataset"><Download size={16} /> {t('map.export')}</button>
@@ -866,7 +872,14 @@ function App() {
           <div className="isp-leaderboard">
             <div className="lb-header">
               <h3><Trophy size={16} /> {t('leaderboard.title')}</h3>
-              <small>Median results · Minimum 3 samples · Higher sample counts are more reliable</small>
+              <small>Median results in the visible map area · Higher sample counts are more reliable</small>
+            </div>
+            <div className="ranking-controls">
+              <div role="group" aria-label="Connection category">
+                {(['all', 'fixed', 'mobile'] as RankingNetwork[]).map((network) => <button key={network} className={rankingNetwork === network ? 'selected' : ''} onClick={() => setRankingNetwork(network)}>{network}</button>)}
+              </div>
+              <label>Minimum samples <select value={rankingMinimum} onChange={(event) => setRankingMinimum(Number(event.target.value))}><option value={3}>3+</option><option value={10}>10+</option><option value={25}>25+</option></select></label>
+              <label><input type="checkbox" checked={rankingPeakOnly} onChange={(event) => setRankingPeakOnly(event.target.checked)} /> Peak hours only</label>
             </div>
             <table>
               <thead>
@@ -888,89 +901,15 @@ function App() {
           </div>
         )}
 
-        {/* Map frame */}
-        <div className="map-frame">
-          <MapContainer center={[0, 20]} zoom={3} scrollWheelZoom className="map" zoomControl>
-            <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            {(mapCenter || location) && <MapFocus coords={(mapCenter || location)!} />}
-
-            {showHeatmap
-              ? <HeatmapLayer points={filteredPoints} />
-              : filteredPoints.map((point, index) => (
-                <CircleMarker key={`${point.name}-${point.coords.join('-')}-${index}`} center={point.coords} radius={point.name === 'Your result' ? 12 : 9} pathOptions={{ color: '#fffdf7', weight: 3, fillColor: colorFor(point.speed), fillOpacity: 1 }}>
-                  <Popup>
-                    <div className="map-popup">
-                      <b>
-                        {point.name}
-                        {point.isVerified && <span className="verified-badge"><BadgeCheck size={12} /> {t('verified')}</span>}
-                      </b>
-                      <span>{point.region}</span>
-                      {point.contributorAlias && <small className="alias-tag">by {point.contributorAlias}</small>}
-                      <strong>{point.speed.toFixed(1)} Mbps</strong>
-                      <small>{point.type}</small>
-                      {point.lastTest && <time>Last tested {new Date(point.lastTest).toLocaleString()}</time>}
-                      {point.sampleCount && point.sampleCount > 1 && <em>{point.sampleCount} tests averaged</em>}
-                      {point.id && point.name !== 'Your result' && (
-                        <button
-                          className="flag-btn"
-                          onClick={(e) => { e.stopPropagation(); handleFlag(point.id!) }}
-                          disabled={flaggedTests.has(point.id)}
-                        >
-                          <Flag size={11} /> {flaggedTests.has(point.id) ? t('flagged') : t('flag')} {point.flagCount ? `(${point.flagCount})` : ''}
-                        </button>
-                      )}
-                    </div>
-                  </Popup>
-                </CircleMarker>
-              ))
-            }
-          </MapContainer>
-
-          {/* Legend with layer toggle */}
-          <div className="legend">
-            <span><i className="fast" /> 90+ Mbps</span>
-            <span><i className="medium" /> 50–89</span>
-            <span><i className="slow" /> Under 50</span>
-            <button className="layer-toggle" onClick={() => setShowHeatmap((v) => !v)} aria-label="Toggle map layer">
-              <Layers size={13} /> {showHeatmap ? t('map.dots') : t('map.heatmap')}
-            </button>
-          </div>
-
-          {/* Empty state */}
-          {!communityTests.length && syncState !== 'loading' && (
-            <div className="empty-map-state"><Radio size={24} /><strong>{t('map.emptyTitle')}</strong><span>{t('map.emptySubtitle')}</span></div>
-          )}
-
-          {/* Map panel (global or regional) */}
-          {showPanel && communityTests.length > 0 && (
-            <aside className="map-panel">
-              <button className="panel-close" onClick={() => setShowPanel(false)} aria-label="Close map summary">×</button>
-              <span className="mini-label">{regionalStats ? t('panel.regional') : t('panel.eyebrow')}</span>
-              <h3>{regionalStats ? searchQuery : t('panel.title')}</h3>
-              <div className="average">
-                <strong>{(regionalStats?.avgDown ?? averageSpeed).toFixed(1)}</strong>
-                <span>{t('panel.avgLabel')}</span>
-              </div>
-              {regionalStats ? (
-                <div className="regional-info">
-                  <span>{regionalStats.count} tests in this area</span>
-                  {regionalStats.topIsp && <span>Top ISP: {regionalStats.topIsp}</span>}
-                </div>
-              ) : (
-                <div className="bar-chart" aria-label="Connection speed distribution">
-                  {chartTests.map((test) => <i key={test.id} style={{ height: `${Math.max(8, Number(test.download_mbps) / chartMax * 100)}%` }} />)}
-                </div>
-              )}
-              <div className="panel-footer">
-                <span>
-                  <b>{regionalStats ? 'Tests' : t('panel.lastTest')}</b>
-                  {regionalStats ? `${regionalStats.count} total` : lastCommunityTest ? new Date(lastCommunityTest.updated_at).toLocaleString() : ''}
-                </span>
-                <strong>{regionalStats ? `${regionalStats.avgDown.toFixed(1)} ${t('panel.avgLabel')}` : fastestTest ? `${Number(fastestTest.download_mbps).toFixed(1)} ${t('panel.best')}` : '—'}</strong>
-              </div>
-            </aside>
-          )}
-        </div>
+        <Suspense fallback={<div className="map-frame map-loading"><span className="live-dot" /> Loading interactive map…</div>}>
+          <CommunityMap
+            points={filteredPoints} focus={mapCenter || location} showHeatmap={showHeatmap} setShowHeatmap={setShowHeatmap}
+            setBounds={setMapBounds} flaggedTests={flaggedTests} onFlag={handleFlag} t={t}
+            tests={communityTests} loading={syncState === 'loading'} showPanel={showPanel} closePanel={() => setShowPanel(false)}
+            regionalStats={regionalStats} searchQuery={searchQuery} averageSpeed={averageSpeed} chartTests={chartTests}
+            chartMax={chartMax} lastTest={lastCommunityTest} fastestTest={fastestTest}
+          />
+        </Suspense>
       </section>
 
       {/* ── How it works ────────────────────────────────── */}
